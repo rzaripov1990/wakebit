@@ -23,17 +23,27 @@ const notepadClass = "Notepad"
 
 // titleMatches reports whether a Notepad window title refers to the file at
 // path: an optional leading "*" (unsaved changes), then exactly the file's
-// base name (case-insensitive, as Windows file names are), then " - ".
-// Whatever follows (the localized app name) is ignored. Examples that match:
-// "wakebit-time.txt - Notepad", "*wakebit-time.txt - Блокнот".
+// base name, or the base name without its extension (Explorer's "hide
+// extensions for known file types" makes Notepad show the stem only), then
+// " - ". Comparison is case-insensitive, as Windows file names are. Whatever
+// follows (the localized app name) is ignored. Examples that match:
+// "wakebit-time.txt - Notepad", "*wakebit-time.txt - Блокнот",
+// "wakebit-time - Notepad". "wakebit-time.bak - Notepad" does not.
 func titleMatches(title, path string) bool {
 	base := filepath.Base(strings.ReplaceAll(path, `\`, "/"))
 	if base == "" || base == "." || base == "/" {
 		return false
 	}
 	t := strings.TrimPrefix(title, "*")
-	prefix := base + " - "
-	return len(t) >= len(prefix) && strings.EqualFold(t[:len(prefix)], prefix)
+	hasPrefix := func(name string) bool {
+		prefix := name + " - "
+		return len(t) >= len(prefix) && strings.EqualFold(t[:len(prefix)], prefix)
+	}
+	if hasPrefix(base) {
+		return true
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	return stem != "" && stem != base && hasPrefix(stem)
 }
 
 // pickWindow returns the Notepad window showing path, or 0. Windows of any
