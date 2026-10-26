@@ -40,3 +40,19 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestLoadClampsHugeInterval(t *testing.T) {
+	cases := map[string]int{
+		`{"Mode":"full","IntervalSec":86400}`:      86400,
+		`{"Mode":"full","IntervalSec":86401}`:      86400,
+		`{"Mode":"full","IntervalSec":2147483647}`: 86400,
+		`{"Mode":"full","IntervalSec":-5}`:         60,
+	}
+	for in, want := range cases {
+		p := filepath.Join(t.TempDir(), "c.json")
+		os.WriteFile(p, []byte(in), 0o644)
+		if got := Load(p).IntervalSec; got != want {
+			t.Errorf("%s: IntervalSec = %d, want %d", in, got, want)
+		}
+	}
+}

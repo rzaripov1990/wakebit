@@ -22,6 +22,10 @@ type Config struct {
 
 const defaultIntervalSec = 60
 
+// maxIntervalSec caps the interval at one day; larger values are clamped
+// (they would also overflow time.Duration arithmetic when huge).
+const maxIntervalSec = 86400
+
 func Default() Config {
 	return Config{Mode: ModeLight, Working: false, IntervalSec: defaultIntervalSec}
 }
@@ -42,6 +46,9 @@ func Load(path string) Config {
 	}
 	if c.IntervalSec <= 0 {
 		c.IntervalSec = d.IntervalSec
+	}
+	if c.IntervalSec > maxIntervalSec {
+		c.IntervalSec = maxIntervalSec
 	}
 	return c
 }
