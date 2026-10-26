@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ type fakePlatform struct {
 	editors     []*fakeEditor
 	opens       int
 	focusErr    error
+	typeErr     error
 	typeBlock   bool
 	openErr     error
 	openGate    chan struct{} // if non-nil, OpenEditor signals openEntered and waits on it
@@ -128,6 +130,9 @@ func (e *fakeEditor) Type(ctx context.Context, text string, delay func() time.Du
 	}
 	e.p.mu.Lock()
 	defer e.p.mu.Unlock()
+	if e.p.typeErr != nil {
+		return e.p.typeErr
+	}
 	e.typed = append(e.typed, text)
 	return nil
 }
@@ -558,4 +563,78 @@ func (s *syncBuffer) String() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.b.String()
+}
+
+func TestApplyIdenticalArgsDoesNotQuit(t *testing.T) {
+	f := quitFake()
+	e := startFullAndWaitTyped(t, f)
+	e.Apply(config.ModeFull, true, time.Hour)
+	if ev := f.eventLog(); len(ev) != 0 {
+		t.Fatalf("identical Apply touched the editor: %v", ev)
+	}
+	e.Stop()
+	assertQuitThenClose(t, f.eventLog())
+}
+
+func TestIntervalChangeQuitsOldEditorOnce(t *testing.T) {
+	f := quitFake()
+	e := startFullAndWaitTyped(t, f)
+	e.Apply(config.ModeFull, true, 2*time.Hour)
+	// The old loop has fully ended (Apply waits for it); the new loop may
+	// already hold a new editor, which is not quit yet.
+	assertQuitThenClose(t, f.eventLog())
+	e.Stop()
+	if n := countEvent(f.eventLog(), "quit"); n > 2 {
+		t.Fatalf("Quit called %d times", n)
+	}
+}
+
+func TestTypeErrorKeepsQuitterEditorAndStopQuits(t *testing.T) {
+	f := quitFake()
+	f.typeErr = errors.New("editor lost focus")
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, iv)
+	waitFor(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.focusCalls >= 3 })
+	e.Stop()
+	_, _, _, _, opens := f.snapshot()
+	if opens != 1 {
+		t.Fatalf("editor reopened %d times after a non-gone Type error", opens)
+	}
+	assertQuitThenClose(t, f.eventLog())
+}
+
+func TestFocusErrorKeepsQuitterEditorAndStopQuits(t *testing.T) {
+	f := quitFake()
+	f.focusErr = errors.New("could not bring editor window to the foreground")
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, iv)
+	waitFor(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.focusCalls >= 3 })
+	e.Stop()
+	_, _, _, _, opens := f.snapshot()
+	if opens != 1 {
+		t.Fatalf("editor reopened %d times after a non-gone Focus error", opens)
+	}
+	assertQuitThenClose(t, f.eventLog())
+}
+
+func TestEditorGoneDropsHandleWithoutQuit(t *testing.T) {
+	f := quitFake()
+	f.focusErr = fmt.Errorf("window for x is gone: %w", ErrEditorGone)
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, iv)
+	waitFor(t, func() bool { _, _, _, _, o := f.snapshot(); return o >= 3 })
+	f.mu.Lock()
+	f.focusErr = nil
+	f.mu.Unlock()
+	waitFor(t, func() bool { _, _, _, ty, _ := f.snapshot(); return len(ty) >= 1 })
+	e.Stop()
+	ev := f.eventLog()
+	// Every dead editor is closed without Quit; only the live one is quit.
+	if countEvent(ev, "quit") != 1 || len(ev) < 4 || ev[len(ev)-2] != "quit" || ev[len(ev)-1] != "close" {
+		t.Fatalf("want [close... quit close] with one quit, got %v", ev)
+	}
+	_, _, _, _, opens := f.snapshot()
+	if countEvent(ev, "close") != opens {
+		t.Fatalf("closed %d of %d editors", countEvent(ev, "close"), opens)
+	}
 }

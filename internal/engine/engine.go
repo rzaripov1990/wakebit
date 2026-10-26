@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math/rand"
 	"os"
@@ -244,14 +245,27 @@ func (e *Engine) fullCycle(ctx context.Context, fs *fullState) {
 	}
 	if err := fs.ed.Focus(); err != nil {
 		log.Printf("engine: focus editor (will retry next tick): %v", err)
-		fs.ed.Close()
-		fs.ed = nil
+		fs.dropOnError(err)
 		return
 	}
 	text := time.Now().Format("15:04:05")
 	if err := fs.ed.Type(ctx, text, e.typeDelay); err != nil && ctx.Err() == nil {
 		log.Printf("engine: type: %v", err)
-		fs.ed.Close()
-		fs.ed = nil
+		fs.dropOnError(err)
 	}
+}
+
+// dropOnError decides what happens to the editor handle after a Focus or
+// Type error. A window that is definitely gone (ErrEditorGone) is dropped
+// without Quit. Otherwise an editor that implements Quitter is kept, so the
+// next cycle re-focuses it and Quit can still close it when Full mode ends;
+// other editors are dropped as before (reopened next cycle).
+func (fs *fullState) dropOnError(err error) {
+	if !errors.Is(err, ErrEditorGone) {
+		if _, ok := fs.ed.(Quitter); ok {
+			return
+		}
+	}
+	fs.ed.Close()
+	fs.ed = nil
 }

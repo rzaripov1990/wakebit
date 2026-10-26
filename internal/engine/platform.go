@@ -2,8 +2,18 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrEditorGone is returned (possibly wrapped) by Editor.Focus or Editor.Type
+// when the editor window for the file definitely no longer exists. The engine
+// then drops the handle (Close, without Quit) and opens the editor again on a
+// later cycle. Any other Focus/Type error is treated as transient for editors
+// that implement Quitter: the handle is kept (so Quit can still close the
+// window when Full mode ends) and Focus is retried next cycle. Editors without
+// Quitter are dropped on any error.
+var ErrEditorGone = errors.New("editor window is gone")
 
 // Platform abstracts the OS-specific operations the engine needs.
 type Platform interface {
@@ -18,9 +28,11 @@ type Platform interface {
 
 // Editor is a handle to an opened editor window.
 type Editor interface {
-	// Focus finds the window by title and brings it to front; error if gone.
+	// Focus finds the window by title and brings it to front. It returns an
+	// error wrapping ErrEditorGone if the window no longer exists.
 	Focus() error
-	// Type types text char by char; it aborts on ctx cancel.
+	// Type types text char by char; it aborts on ctx cancel. It returns an
+	// error wrapping ErrEditorGone if the window no longer exists.
 	Type(ctx context.Context, text string, delay func() time.Duration) error
 	// Close releases handles only; it does not close the editor.
 	Close()
