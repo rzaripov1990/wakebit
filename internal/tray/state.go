@@ -63,3 +63,20 @@ func toggleLabel(c config.Config) string {
 func (s *state) interval() time.Duration {
 	return time.Duration(s.cfg.IntervalSec) * time.Second
 }
+
+// Autostart abstracts the OS autostart so the tray logic stays testable.
+type Autostart struct {
+	Enabled func() bool
+	Set     func(on bool) error
+}
+
+// toggleAutostart flips the autostart state given the checkbox's current
+// state and returns the state the checkbox should now show; on error the
+// state is unchanged.
+func toggleAutostart(a Autostart, current bool) bool {
+	if err := a.Set(!current); err != nil {
+		log.Printf("tray: autostart: %v", err)
+		return current
+	}
+	return !current
+}

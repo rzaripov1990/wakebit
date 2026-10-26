@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -78,5 +79,20 @@ func TestLabels(t *testing.T) {
 		if got := toggleLabel(c.c); got != c.pb {
 			t.Errorf("toggleLabel = %q want %q", got, c.pb)
 		}
+	}
+}
+
+func TestToggleAutostart(t *testing.T) {
+	var got []bool
+	ok := Autostart{Set: func(on bool) error { got = append(got, on); return nil }}
+	if !toggleAutostart(ok, false) || toggleAutostart(ok, true) {
+		t.Fatal("expected flip")
+	}
+	if len(got) != 2 || !got[0] || got[1] {
+		t.Fatalf("calls %v", got)
+	}
+	bad := Autostart{Set: func(bool) error { return errors.New("boom") }}
+	if toggleAutostart(bad, false) != false || toggleAutostart(bad, true) != true {
+		t.Fatal("expected revert on error")
 	}
 }

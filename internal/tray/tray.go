@@ -11,19 +11,17 @@ import (
 )
 
 // Run shows the tray icon and blocks until the user quits.
-func Run(cfgPath string, eng *engine.Engine) {
+func Run(cfgPath string, eng *engine.Engine, auto Autostart) {
 	s := newState(cfgPath, config.Load(cfgPath), eng.Apply)
-	systray.Run(func() { onReady(s) }, func() {})
+	systray.Run(func() { onReady(s, auto) }, func() {})
 }
 
-func onReady(s *state) {
+func onReady(s *state, auto Autostart) {
 	mFull := systray.AddMenuItemCheckbox("Режим: Полный", "", false)
 	mLight := systray.AddMenuItemCheckbox("Режим: Лёгкий", "", false)
 	mToggle := systray.AddMenuItem("", "")
 	systray.AddSeparator()
-	// TODO(Task 5): wire autostart (registry Run key); disabled placeholder until then.
-	mAuto := systray.AddMenuItemCheckbox("Автозапуск", "", false)
-	mAuto.Disable()
+	mAuto := systray.AddMenuItemCheckbox("Автозапуск", "", auto.Enabled())
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Выход", "")
 
@@ -60,6 +58,9 @@ func onReady(s *state) {
 			case <-mToggle.ClickedCh:
 				mu.Lock()
 				s.toggleWorking()
+			case <-mAuto.ClickedCh:
+				mu.Lock()
+				setChecked(mAuto, toggleAutostart(auto, mAuto.Checked()))
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 				return
