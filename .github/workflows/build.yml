@@ -83,9 +83,12 @@ jobs:
           chmod +x macos/wakebit
           cd macos && tar -czf ../out/wakebit-${{ github.ref_name }}-macos-arm64.tar.gz wakebit && cd ..
           cd out && sha256sum * > SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: out/*
-          generate_release_notes: true
-          body: |
-            Windows build is verified on Windows 11 (see README). The macOS build has not been tested on a real Mac.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" out/* \
+            --repo "${{ github.repository }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            --notes "Windows build is verified on Windows 11 (see README). The macOS build has not been tested on a real Mac."
