@@ -1,46 +1,48 @@
 # Wakebit
 
-Трей-приложение на Go, которое не даёт компьютеру уходить в сон (система и экран), пока вы отошли от стола. Цель только одна: предотвратить сон. Поддержка «зелёного» статуса в мессенджерах не является целью.
+[English](README.md) | [Русский](README_RU.md)
 
-## Режимы и статусы
+A Go tray app that keeps your computer (system and display) from going to sleep while you are away from your desk. It has one goal: preventing sleep. Keeping a "green" presence status in messengers is not a goal.
 
-Режим и статус независимы и сохраняются между запусками.
+## Modes and statuses
 
-- **Работает** — выбранный режим активен: сон заблокирован средствами ОС, и идёт имитация активности.
-- **Отдыхает** — ничего не блокируется и не имитируется.
+Mode and status are independent and persist between launches.
 
-Режимы (по умолчанию «Лёгкий», интервал 60 с):
+- **Working** — the selected mode is active: sleep is blocked through the OS and activity is simulated.
+- **Resting** — nothing is blocked and nothing is simulated.
 
-- **Лёгкий** — раз в интервал курсор сдвигается на 1–2 с и возвращается на прежнее место. Если во время сдвига пользователь сам двигает мышь, сдвиг прерывается и курсор не возвращается.
-- **Полный** — раз в интервал создаётся/используется файл `wakebit-time.txt` во временной папке, открывается в Блокноте, окно получает фокус, и текущее время печатается посимвольно со случайными паузами. Когда «Полный» режим заканчивается (пауза/«Отдыхает», смена режима, выход; а также смена интервала в файле конфигурации — из трея интервал не меняется), на Windows Wakebit сам ненадолго выводит именно это окно Блокнота на передний план, сохраняет файл (Ctrl+S) и закрывает его без вопроса о сохранении: классический Блокнот — закрытием окна (WM_CLOSE), Блокнот Windows 11 с вкладками — закрытием только нашей вкладки (Ctrl+W). Поэтому при паузе и выходе Блокнот может на мгновение появиться поверх других окон. Wakebit никогда не действует, пока вы печатаете: перед каждым нажатием он ждёт 300 мс без ввода с клавиатуры и мыши и заново проверяет, что окно — Блокнот с нашим файлом, оно на переднем плане и не зажата клавиша-модификатор. Окно закрывается только после того, как из заголовка исчезла `*` (файл сохранён). Другие окна и вкладки не трогаются; если вывести окно на передний план безопасно не удалось (за ~0,5 с), окно уже не показывает наш файл, файл не сохранился (только для чтения, открылся диалог «Сохранить как») или за ~3 с не наступила пауза во вводе — Wakebit сдаётся, оставляет окно (и диалог) как есть и пишет причину в лог. На macOS TextEdit пока не закрывается.
+Modes (default is Light, interval 60 s):
 
-В обоих режимах цикл пропускается, пока пользователь активен: действия начинаются только после 5 с без ввода.
+- **Light** — once per interval the cursor moves for 1–2 s and returns to where it was. If you move the mouse yourself during the nudge, the nudge is aborted and the cursor is not restored.
+- **Full** — once per interval a file `wakebit-time.txt` is created/reused in the temp folder, opened in Notepad, the window is focused and the current time is typed character by character with random pauses. When Full mode ends (pause/"Resting", mode change, quit, or an interval change in the config file — the interval cannot be changed from the tray), on Windows Wakebit briefly brings exactly that Notepad window to the foreground, saves the file (Ctrl+S) and closes it without a save prompt: classic Notepad by closing the window (WM_CLOSE), tabbed Windows 11 Notepad by closing only our tab (Ctrl+W). So on pause and quit Notepad may flash on top of other windows for a moment. Wakebit never acts while you are typing: before every keystroke it waits for 300 ms without keyboard or mouse input and re-checks that the window is Notepad showing our file, that it is in the foreground and that no modifier key is held. The window is closed only after the `*` has disappeared from the title (file saved). Other windows and tabs are not touched; if bringing the window to the foreground safely fails (within ~0.5 s), the window no longer shows our file, the file was not saved (read-only, a "Save As" dialog appeared) or no pause in your input occurred within ~3 s, Wakebit gives up, leaves the window (and dialog) as is and logs the reason. On macOS TextEdit is not closed yet.
 
-## Использование
+In both modes a cycle is skipped while the user is active: actions start only after 5 s without input.
 
-Иконка в трее: зелёная — работает, серая — отдыхает; в подсказке «Wakebit: работает (Полный)» или «Wakebit: отдыхает».
+## Usage
 
-- Левый клик по иконке переключает «работает»/«отдыхает».
-- Правый клик открывает меню: «Режим: Полный», «Режим: Лёгкий», «Пауза» / «Продолжить» (то же, что левый клик), «Автозапуск» (галочка), «Выход».
+Tray icon: green — working, grey — resting; the tooltip reads "Wakebit: работает (Полный)" or "Wakebit: отдыхает" (the UI is in Russian).
 
-## Установка и удаление (Windows)
+- Left click toggles working/resting.
+- Right click opens the menu: "Режим: Полный" (Full), "Режим: Лёгкий" (Light), "Пауза" / "Продолжить" (Pause / Resume — same as left click), "Автозапуск" (Autostart, checkbox), "Выход" (Quit).
 
-Права администратора не нужны.
+## Install and uninstall (Windows)
+
+No administrator rights needed.
 
 ```
 wakebit.exe --install
 wakebit.exe --uninstall
 ```
 
-`--install` копирует exe в `%LOCALAPPDATA%\Wakebit`, включает автозапуск (значение `Wakebit` в `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) и запускает установленную копию. Если установленная копия уже запущена, выйдите из неё через трей и повторите.
+`--install` copies the exe to `%LOCALAPPDATA%\Wakebit`, enables autostart (the value `Wakebit` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and starts the installed copy. If the installed copy is already running, quit it from the tray and repeat.
 
-`--uninstall` отключает автозапуск и удаляет установочную папку. Флаги `--install` и `--uninstall` нельзя указывать вместе. Автозапуск также можно включать и выключать пунктом меню «Автозапуск».
+`--uninstall` disables autostart and removes the install folder. `--install` and `--uninstall` cannot be combined. Autostart can also be toggled with the "Автозапуск" menu item.
 
-Защита от второго экземпляра: Windows использует именованный mutex `Local\Wakebit`, macOS (и Linux) — эксклюзивную блокировку `flock` на файле `wakebit.lock` рядом с `config.json` (например `~/Library/Application Support/Wakebit/wakebit.lock`). Второй экземпляр сразу и молча завершается. Файл блокировки не удаляется при выходе — это нормально: блокировку держит открытый дескриптор, и ОС снимает её при завершении процесса (в т.ч. при падении). Если создать папку или файл блокировки не удалось, приложение запускается без защиты и пишет причину в лог.
+Single-instance guard: Windows uses the named mutex `Local\Wakebit`; macOS (and Linux) use an exclusive `flock` on a `wakebit.lock` file next to `config.json` (e.g. `~/Library/Application Support/Wakebit/wakebit.lock`). A second instance exits immediately and silently. The lock file is not removed on exit — that is fine: the lock is held by an open descriptor and the OS releases it when the process ends (including a crash). If the folder or lock file cannot be created, the app starts without the guard and logs the reason.
 
-## Конфигурация
+## Configuration
 
-Файл создаётся при изменении настроек:
+The file is created when settings change:
 
 - Windows: `%AppData%\Wakebit\config.json`
 - macOS: `~/Library/Application Support/Wakebit/config.json`
@@ -53,55 +55,56 @@ wakebit.exe --uninstall
 }
 ```
 
-`Mode` — `light` или `full`; `Working` — текущий статус; `IntervalSec` — интервал в секундах (не больше 86400; большее значение ограничивается до 86400). Отсутствующий файл, битый JSON или некорректные значения заменяются значениями по умолчанию.
+`Mode` is `light` or `full`; `Working` is the current status; `IntervalSec` is the interval in seconds (at most 86400; larger values are clamped to 86400). A missing file, broken JSON or invalid values are replaced with defaults.
 
-## Сборка
+## Build
 
 ```
 GOOS=windows go build -ldflags "-H=windowsgui" -o dist/wakebit.exe .
 ```
 
-Нужен Go 1.22+. GitHub Actions (`.github/workflows/build.yml`) на каждый push/PR запускает vet и тесты и публикует артефакты `wakebit-windows` (`dist/wakebit.exe`) и `wakebit-macos` (`dist/wakebit`); job `linux` проверяет тесты и кросс-сборку под Windows.
+Go 1.22+ is required. GitHub Actions (`.github/workflows/build.yml`) runs vet and tests on every push/PR and publishes the artifacts `wakebit-windows` (`dist/wakebit.exe`) and `wakebit-macos` (`dist/wakebit`); the `linux` job checks tests and the Windows cross-build.
 
-## Ручная проверка на Windows
+## Manual check on Windows
 
-`selftest` запускает один цикл «Полного» режима на реальной платформе (интервал 1 с):
+`selftest` runs one Full-mode cycle on the real platform (1 s interval):
 
 ```
 GOOS=windows go build -o dist/selftest.exe ./cmd/selftest
 selftest.exe -d 12s
 ```
 
-`-d` — сколько времени работать (по умолчанию 8 с). Не трогайте мышь и клавиатуру: цикл стартует только после ≥5 с простоя. Ожидаемо: Блокнот открывает `wakebit-time.txt` (в файле записано время открытия и перевод строки); Блокнот ставит курсор в начало файла, поэтому напечатанное время оказывается в самом начале первой строки, слитно с записанным временем (например `16:05:1216:05:07`), а время следующих циклов печатается подряд, без перевода строки. По окончании `wakebit-time.txt` сохраняется, окно (или вкладка) Блокнота закрывается без вопроса о сохранении, блокировка сна снимается, а selftest пишет, осталось ли окно с файлом открытым.
+`-d` is how long to run (default 8 s). Do not touch the mouse or keyboard: a cycle starts only after ≥5 s of idle. Expected: Notepad opens `wakebit-time.txt` (the file contains the open time and a newline); Notepad puts the caret at the start of the file, so the typed time lands at the very start of the first line, run together with the written time (e.g. `16:05:1216:05:07`), and the times of later cycles are typed one after another without a newline. At the end `wakebit-time.txt` is saved, the Notepad window (or tab) is closed without a save prompt, sleep blocking is released, and selftest reports whether a window with the file is still open.
 
-## Статус проверки
+## Verification status
 
-- **Windows:** код компилируется (в т.ч. кросс-сборкой из Linux), чистые части покрыты юнит-тестами, и они проходят. Реальное поведение на настоящем рабочем столе — трей, ввод в Блокнот, установка, автозапуск через реестр — **ещё не запускалось**.
-- **macOS:** код **ни разу не компилировался и не запускался** — **НЕ ПРОВЕРЕНО** до первого прогона macOS CI и ручной проверки на Mac.
+- **Windows:** verified on a real Windows 11 desktop with `selftest`: Notepad opens, the time is typed, and on stop the file is saved and the window closes without a prompt. The tray, installation, registry autostart, closing when the user has other unsaved tabs, and Pause/Quit from the tray have **not** been exercised on a real desktop yet. Pure logic is covered by unit tests, which pass.
+- **macOS:** the code has **never been compiled or run** — **NOT VERIFIED** until the first macOS CI run and a manual check on a Mac.
 
-## Ограничения и известные проблемы
+## Limitations and known issues
 
-- macOS: для «Полного» режима нужно разрешение «Универсальный доступ» (Accessibility), которое пользователь выдаёт в «Системных настройках»; система может запросить пароль администратора. «Лёгкий» режим работает без него, но может не сбрасывать «неактивный» статус внутри приложений вроде Teams/Slack.
-- macOS: первые вызовы `osascript` вызывают запросы разрешения на Automation.
-- macOS: приложение не подписано, Gatekeeper покажет предупреждение — откройте через правый клик → «Открыть».
-- macOS-сборка в CI (`macos-latest`) только arm64.
-- Windows 11 с вкладками в Блокноте: наша вкладка должна быть активной.
-- Windows: процесс в самом начале запуска объявляет себя DPI-aware (per-monitor v2 через `SetProcessDpiAwarenessContext`, на старых Windows — `SetProcessDPIAware`, без манифеста), чтобы координаты курсора и метрики экрана были в физических пикселях и курсор возвращался точно на место. На настоящем рабочем столе со смешанным DPI (мониторы с разным масштабом) это **ещё не проверено**.
-- Windows `--uninstall` оставляет установочную папку, если запущенный exe — это установленная копия (запущенный файл удалить нельзя).
-- Windows: если «Полный» режим не дождался окна Блокнота (~10 с), следующие 3 цикла пропускаются, чтобы не запускать `notepad.exe` каждый интервал.
-- Windows: галочка «Автозапуск», включённая из неустановленной копии, указывает на эту копию (а не на `%LOCALAPPDATA%\Wakebit`); галочка лишь проверяет, что значение `Wakebit` в реестре существует, а не куда оно указывает.
-- Windows: `--install` и `--uninstall` не сообщают об успехе (сообщение показывается только при ошибке).
-- Windows: `--uninstall` не останавливает запущенный экземпляр (выйдите через трей) и не удаляет конфигурацию `%AppData%\Wakebit`.
-- Windows: при остановке «Полного» режима Wakebit сохраняет временный файл и закрывает его окно/вкладку (до ~3 с; на это время меню трея не отвечает). Если приложение убито или упало, окно Блокнота остаётся открытым с несохранённым буфером — при выключении Блокнот может спросить о сохранении. Если закрыть не удалось (окно показывает другой файл, перехвачен фокус, висит диалог), окно тоже остаётся, причина пишется в лог; процесс Блокнота никогда не завершается принудительно.
-- Windows: классический Блокнот и Блокнот с вкладками различаются по наличию дочернего окна `Edit`; это и закрытие вкладки по Ctrl+W ещё не проверены на настоящем рабочем столе.
-- macOS: окно TextEdit после «Полного» режима не закрывается.
-- Ещё нужно проверить вручную на настоящем рабочем столе:
-  - Windows 10 со скрытыми расширениями файлов (заголовок `wakebit-time - Блокнот`); запасной путь фокуса через нажатие ALT; сдвиг курсора в «Лёгком» режиме при реальном движении мыши.
-  - Windows 11 с вкладками: в окне есть несохранённые вкладки пользователя, а наша вкладка активна / неактивна — закрывается только наша вкладка, вкладки пользователя и их содержимое не трогаются, вопросов о сохранении нет.
-  - Пауза кликом по иконке трея и через пункт меню, а также «Выход» — окно/вкладка закрывается, блокировка сна снимается.
-  - `wakebit-time.txt` только для чтения — Ctrl+S не сохраняет, окно (и возможный диалог) остаётся открытым, причина в логе.
-  - Свёрнутый Блокнот — восстанавливается и закрывается (или Wakebit сдаётся с ошибкой, ничего не нажав).
-  - Начать печатать в Блокноте во время цикла, затем сразу нажать «Пауза» — ни одно нажатие Wakebit не смешивается с вашим вводом.
-  - Возврат курсора на место на нескольких мониторах с разным масштабом (смешанный DPI).
-  - Иконка и меню трея при масштабе 150% и выше.
-- Цель — только предотвращение сна, а не присутствие в мессенджерах.
+- macOS: Full mode needs the Accessibility permission, which the user grants in System Settings; the system may ask for an administrator password. Light mode works without it but may not reset the "idle" status inside apps like Teams/Slack.
+- macOS: the first `osascript` calls trigger Automation permission prompts.
+- macOS: the app is unsigned, so Gatekeeper shows a warning — open it via right click → Open.
+- The macOS CI build (`macos-latest`) is arm64 only.
+- Windows 11 tabbed Notepad: our tab must be the active one.
+- Windows: the process declares itself DPI-aware at the very start (per-monitor v2 via `SetProcessDpiAwarenessContext`, `SetProcessDPIAware` on older Windows, no manifest) so cursor coordinates and screen metrics are in physical pixels and the cursor returns exactly. This has **not yet been verified** on a real mixed-DPI desktop.
+- Windows `--uninstall` leaves the install folder if the running exe is the installed copy (a running file cannot be deleted).
+- Windows: if Full mode did not get a Notepad window (~10 s), the next 3 cycles are skipped so `notepad.exe` is not started every interval.
+- Windows: the "Автозапуск" checkbox enabled from a non-installed copy points at that copy (not at `%LOCALAPPDATA%\Wakebit`); the checkbox only checks that the `Wakebit` registry value exists, not where it points.
+- Windows: `--install` and `--uninstall` do not report success (a message is shown only on error).
+- Windows: `--uninstall` does not stop a running instance (quit via the tray) and does not delete the `%AppData%\Wakebit` config.
+- Windows: when Full mode stops, Wakebit saves the temp file and closes its window/tab (up to ~3 s; the tray menu does not respond meanwhile). If the app is killed or crashes, the Notepad window stays open with an unsaved buffer — Notepad may ask to save on shutdown. If closing fails (the window shows another file, focus was taken, a dialog is open), the window stays too and the reason is logged; the Notepad process is never killed.
+- Windows: Notepad's title separates the file name and app name with a hyphen, en dash or em dash depending on version/locale (Windows 11 shows `wakebit-time.txt — Блокнот`); all three are accepted.
+- Windows: classic and tabbed Notepad are told apart by the presence of a child `Edit` window; this and closing the tab with Ctrl+W have not been verified on a real desktop.
+- macOS: the TextEdit window is not closed after Full mode.
+- Still to check manually on a real desktop:
+  - Windows 10 with hidden file extensions (title `wakebit-time - Блокнот`); the ALT-tap focus fallback; the Light-mode nudge with real mouse movement.
+  - Windows 11 tabbed Notepad with the user's unsaved tabs, our tab active / inactive — only our tab closes, the user's tabs and their contents are untouched, no save prompts.
+  - Pause by clicking the tray icon and via the menu, and Quit — the window/tab closes and sleep blocking is released.
+  - Read-only `wakebit-time.txt` — Ctrl+S does not save, the window (and any dialog) stays open, the reason is in the log.
+  - Minimized Notepad — it is restored and closed (or Wakebit gives up with an error without pressing anything).
+  - Start typing in Notepad during a cycle, then immediately press Pause — none of Wakebit's keystrokes mix with yours.
+  - Cursor return across several monitors with different scaling (mixed DPI).
+  - Tray icon and menu at 150% scaling and above.
+- The goal is only to prevent sleep, not messenger presence.
