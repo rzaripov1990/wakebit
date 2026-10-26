@@ -2,6 +2,8 @@ name: build
 
 on:
   push:
+    branches: ['**']
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -21,7 +23,9 @@ jobs:
       - name: Test
         run: go test ./...
       - name: Build
-        run: go build -ldflags "-H=windowsgui" -o dist/wakebit.exe .
+        run: |
+          go build -ldflags "-H=windowsgui" -o dist/wakebit.exe .
+          go build -o dist/selftest.exe ./cmd/selftest
       - uses: actions/upload-artifact@v4
         with:
           name: wakebit-windows
@@ -56,3 +60,32 @@ jobs:
         run: go test ./...
       - name: Cross-build for Windows
         run: GOOS=windows go build ./...
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wakebit-windows
+          path: windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: wakebit-macos
+          path: macos
+      - name: Package
+        run: |
+          mkdir out
+          cd windows && zip -q ../out/wakebit-${{ github.ref_name }}-windows-amd64.zip wakebit.exe selftest.exe && cd ..
+          chmod +x macos/wakebit
+          cd macos && tar -czf ../out/wakebit-${{ github.ref_name }}-macos-arm64.tar.gz wakebit && cd ..
+          cd out && sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: out/*
+          generate_release_notes: true
+          body: |
+            Windows build is verified on Windows 11 (see README). The macOS build has not been tested on a real Mac.
