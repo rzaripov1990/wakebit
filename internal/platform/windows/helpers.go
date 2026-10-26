@@ -133,3 +133,48 @@ func (t *idleTracker) idle(now, lastInput uint32) time.Duration {
 	d := max(int32(now-t.lastUser), 0)
 	return time.Duration(d) * time.Millisecond
 }
+
+// quitHow is how Quit closes the Notepad window showing our file.
+type quitHow int
+
+const (
+	// quitByWMClose posts WM_CLOSE: classic Notepad holds one document per
+	// window, so closing the window closes only our file.
+	quitByWMClose quitHow = iota
+	// quitByCloseTab sends Ctrl+W: Windows 11 Notepad may have opened our
+	// file as a tab in a window that also holds the user's documents, and
+	// WM_CLOSE would close (or prompt for) all of them. Ctrl+W closes only
+	// the active tab, which Quit has verified is ours; closing the last tab
+	// closes the window.
+	quitByCloseTab
+)
+
+// quitMethod picks the close method: classic Notepad has a direct "Edit"
+// child window, the tabbed Windows 11 Notepad does not.
+func quitMethod(hasEditChild bool) quitHow {
+	if hasEditChild {
+		return quitByWMClose
+	}
+	return quitByCloseTab
+}
+
+// quitDone reports whether our document is closed: the window is gone, or
+// (tabbed Notepad) the window now shows another tab.
+func quitDone(alive bool, title, path string, how quitHow) bool {
+	if !alive {
+		return true
+	}
+	return how == quitByCloseTab && !titleMatches(title, path)
+}
+
+// modifierHeld reports whether any GetAsyncKeyState result has the "key is
+// down" (high) bit set. A physically held Shift/Alt/Win would turn our
+// Ctrl+S into another shortcut (Ctrl+Shift+S is "Save as").
+func modifierHeld(states []uint16) bool {
+	for _, s := range states {
+		if s&0x8000 != 0 {
+			return true
+		}
+	}
+	return false
+}

@@ -19,7 +19,11 @@ const (
 	mouseeventfVirtualDesk = 0x4000
 	mouseeventfAbsolute    = 0x8000
 
-	vkMenu = 0x12 // ALT
+	vkShift   = 0x10
+	vkControl = 0x11
+	vkMenu    = 0x12 // ALT
+	vkLWin    = 0x5B
+	vkRWin    = 0x5C
 )
 
 type mouseInput struct {
@@ -61,4 +65,15 @@ func unicodeKeys(units []uint16) []keybdINPUT {
 		)
 	}
 	return out
+}
+
+// ctrlChord returns Ctrl+vk as virtual-key INPUTs: Ctrl down, vk down, vk up,
+// Ctrl up. vk is a Win32 virtual-key code ('S' is VK_S).
+func ctrlChord(vk uint16) []keybdINPUT {
+	return []keybdINPUT{
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkControl}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vk}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vk, Flags: keyeventfKeyUp}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkControl, Flags: keyeventfKeyUp}},
+	}
 }

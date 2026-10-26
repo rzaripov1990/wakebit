@@ -153,3 +153,65 @@ func TestInputStructSizes(t *testing.T) {
 		t.Errorf("keybdINPUT size %d, want %d", s, want)
 	}
 }
+
+func TestCtrlChord(t *testing.T) {
+	got := ctrlChord('S')
+	want := []keybdINPUT{
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkControl}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: 'S'}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: 'S', Flags: keyeventfKeyUp}},
+		{Type: inputKeyboard, Ki: keybdInput{Vk: vkControl, Flags: keyeventfKeyUp}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("input %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestQuitMethod(t *testing.T) {
+	if quitMethod(true) != quitByWMClose {
+		t.Error("classic Notepad (Edit child) must close via WM_CLOSE")
+	}
+	if quitMethod(false) != quitByCloseTab {
+		t.Error("tabbed Notepad must close only our tab (Ctrl+W)")
+	}
+}
+
+func TestQuitDone(t *testing.T) {
+	p := `C:\Temp\wakebit-time.txt`
+	cases := []struct {
+		name  string
+		alive bool
+		title string
+		m     quitHow
+		want  bool
+	}{
+		{"gone classic", false, "", quitByWMClose, true},
+		{"gone tabbed", false, "", quitByCloseTab, true},
+		{"classic still ours", true, "wakebit-time.txt - Notepad", quitByWMClose, false},
+		{"classic other title", true, "other.txt - Notepad", quitByWMClose, false},
+		{"tabbed still ours", true, "*wakebit-time.txt - Notepad", quitByCloseTab, false},
+		{"tabbed switched to user tab", true, "notes.txt - Notepad", quitByCloseTab, true},
+	}
+	for _, c := range cases {
+		if got := quitDone(c.alive, c.title, p, c.m); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestModifierHeld(t *testing.T) {
+	if modifierHeld([]uint16{0, 0x0001, 0}) {
+		t.Error("toggle/low bits only must not count as held")
+	}
+	if !modifierHeld([]uint16{0, 0x8000}) {
+		t.Error("high bit means held")
+	}
+	if !modifierHeld([]uint16{0x8001}) {
+		t.Error("high bit with low bit means held")
+	}
+}

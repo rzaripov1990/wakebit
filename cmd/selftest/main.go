@@ -1,7 +1,9 @@
 // Command selftest runs one Full-mode cycle of the engine on the real
 // platform so it can be checked by hand on a desktop (it moves focus, opens
-// Notepad and types the time). Do not touch mouse or keyboard while it runs:
-// the engine only acts after 5 s without user input.
+// Notepad and types the time, then on Stop saves the temp file and closes the
+// Notepad window (or, in tabbed Windows 11 Notepad, only its tab) that it
+// opened. Do not touch mouse or keyboard while it runs: the engine only acts
+// after 5 s without user input.
 //
 //	GOOS=windows go build -o selftest.exe ./cmd/selftest && selftest.exe
 package main
@@ -30,7 +32,8 @@ func main() {
 	log.Printf("idle for %v", p.IdleFor())
 
 	tmp := os.TempDir()
-	log.Printf("starting Full mode, interval 1s, for %v; file %s", *dur, filepath.Join(tmp, "wakebit-time.txt"))
+	file := filepath.Join(tmp, "wakebit-time.txt")
+	log.Printf("starting Full mode, interval 1s, for %v; file %s", *dur, file)
 	log.Printf("hands off mouse and keyboard: a cycle starts once idle >= 5s")
 	e := engine.New(p, tmp)
 	e.Apply(config.ModeFull, true, time.Second)
@@ -42,5 +45,12 @@ func main() {
 	}
 	e.Stop()
 	log.Printf("stopped; sleep blocking released")
-	fmt.Println("Expected: Notepad shows wakebit-time.txt; the caret starts at the beginning of the file, so the typed time appears at the very start of the first line, run together with the written time (e.g. 16:05:1216:05:07); later cycles append without a newline.")
+	if open, ok := editorWindowOpen(file); ok {
+		if open {
+			log.Printf("Notepad window for %s is STILL OPEN (see the log above for why)", filepath.Base(file))
+		} else {
+			log.Printf("no Notepad window shows %s any more (closed)", filepath.Base(file))
+		}
+	}
+	fmt.Println("Expected: Notepad shows wakebit-time.txt; the caret starts at the beginning of the file, so the typed time appears at the very start of the first line, run together with the written time (e.g. 16:05:1216:05:07); later cycles append without a newline. After Stop the file is saved and its Notepad window (or tab) is closed without a prompt; no other window is touched.")
 }
