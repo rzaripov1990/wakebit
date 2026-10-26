@@ -1,6 +1,8 @@
 package winplat
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -181,26 +183,166 @@ func TestQuitMethod(t *testing.T) {
 	}
 }
 
-func TestQuitDone(t *testing.T) {
-	p := `C:\Temp\wakebit-time.txt`
+// fakeClock drives a quitPacer without real sleeping.
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time { return c.t }
+
+func (c *fakeClock) sleep(d time.Duration) {
+	if d <= 0 {
+		panic("non-positive sleep would spin")
+	}
+	c.t = c.t.Add(d)
+}
+
+func newTestPacer(budget time.Duration) (*fakeClock, quitPacer) {
+	c := &fakeClock{t: time.Unix(1000, 0)}
+	return c, quitPacer{deadline: c.t.Add(budget), now: c.now, sleep: c.sleep}
+}
+
+func TestQuitPacerSleepNeverPassesDeadline(t *testing.T) {
+	c, p := newTestPacer(30 * time.Millisecond)
+	n := 0
+	for p.wait() {
+		n++
+	}
+	if n != 2 { // 20 ms, then the remaining 10 ms
+		t.Fatalf("waited %d polls, want 2", n)
+	}
+	if c.t.After(p.deadline) {
+		t.Fatalf("slept past the deadline: %v > %v", c.t, p.deadline)
+	}
+}
+
+func TestQuitPacerWithin(t *testing.T) {
+	_, p := newTestPacer(3 * time.Second)
+	q := p.within(500 * time.Millisecond)
+	if got := q.deadline.Sub(p.now()); got != 500*time.Millisecond {
+		t.Fatalf("sub-deadline %v, want 500ms", got)
+	}
+	_, short := newTestPacer(100 * time.Millisecond)
+	if q := short.within(500 * time.Millisecond); !q.deadline.Equal(short.deadline) {
+		t.Fatal("sub-deadline must never extend the overall deadline")
+	}
+}
+
+func TestWaitQuietWaitsForQuietPeriodThenChecks(t *testing.T) {
+	c, p := newTestPacer(3 * time.Second)
+	start := c.t
+	// User typed 100 ms ago; idle grows with the fake clock.
+	idle := func() time.Duration { return 100*time.Millisecond + c.t.Sub(start) }
+	checks := 0
+	check := func() error { checks++; return nil }
+	if err := waitQuiet(p, idle, check); err != nil {
+		t.Fatal(err)
+	}
+	if idle() < quitQuiet {
+		t.Fatalf("returned before the quiet period: idle %v", idle())
+	}
+	if checks == 0 {
+		t.Fatal("ready check not run after the quiet period")
+	}
+}
+
+func TestWaitQuietTimesOutWhileUserKeepsTyping(t *testing.T) {
+	c, p := newTestPacer(time.Second)
+	checks := 0
+	err := waitQuiet(p, func() time.Duration { return 10 * time.Millisecond }, func() error { checks++; return nil })
+	if err == nil {
+		t.Fatal("must fail while the user keeps typing")
+	}
+	if c.t.After(p.deadline) {
+		t.Fatal("waited past the deadline")
+	}
+}
+
+func TestWaitQuietReturnsCheckError(t *testing.T) {
+	_, p := newTestPacer(time.Second)
+	want := errors.New("lost focus")
+	if err := waitQuiet(p, func() time.Duration { return time.Hour }, func() error { return want }); !errors.Is(err, want) {
+		t.Fatalf("got %v, want %v", err, want)
+	}
+}
+
+// titleSeq returns successive window states, repeating the last one.
+func titleSeq(states ...winState) func() winState {
+	i := 0
+	return func() winState {
+		s := states[min(i, len(states)-1)]
+		i++
+		return s
+	}
+}
+
+const testPath = `C:\Temp\wakebit-time.txt`
+
+func TestWaitSaved(t *testing.T) {
+	ours, dirty := "wakebit-time.txt - Notepad", "*wakebit-time.txt - Notepad"
 	cases := []struct {
-		name  string
-		alive bool
-		title string
-		m     quitHow
-		want  bool
+		name     string
+		states   []winState
+		wantErr  bool
+		wantGone bool
 	}{
-		{"gone classic", false, "", quitByWMClose, true},
-		{"gone tabbed", false, "", quitByCloseTab, true},
-		{"classic still ours", true, "wakebit-time.txt - Notepad", quitByWMClose, false},
-		{"classic other title", true, "other.txt - Notepad", quitByWMClose, false},
-		{"tabbed still ours", true, "*wakebit-time.txt - Notepad", quitByCloseTab, false},
-		{"tabbed switched to user tab", true, "notes.txt - Notepad", quitByCloseTab, true},
+		{"never dirty", []winState{{true, ours}}, false, false},
+		{"clears after a few polls", []winState{{true, dirty}, {true, dirty}, {true, ours}}, false, false},
+		{"never clears (read-only / Save As)", []winState{{true, dirty}}, true, false},
+		{"title switches to another file", []winState{{true, dirty}, {true, "notes.txt - Notepad"}}, true, false},
+		{"window disappears", []winState{{true, dirty}, {false, ""}}, true, true},
 	}
 	for _, c := range cases {
-		if got := quitDone(c.alive, c.title, p, c.m); got != c.want {
+		clk, p := newTestPacer(time.Second)
+		err := waitSaved(p, titleSeq(c.states...), testPath)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
+		}
+		if errors.Is(err, errQuitWindowGone) != c.wantGone {
+			t.Errorf("%s: gone = %v, want %v", c.name, errors.Is(err, errQuitWindowGone), c.wantGone)
+		}
+		if clk.t.After(p.deadline) {
+			t.Errorf("%s: waited past the deadline", c.name)
+		}
+	}
+}
+
+func TestQuitDone(t *testing.T) {
+	ours := "wakebit-time.txt - Notepad"
+	cases := []struct {
+		name      string
+		st        winState
+		elsewhere bool
+		want      bool
+	}{
+		{"gone", winState{false, ""}, false, true},
+		{"gone, file elsewhere", winState{false, ""}, true, true},
+		{"still ours", winState{true, ours}, false, false},
+		{"still ours dirty", winState{true, "*" + ours}, false, false},
+		{"other title, file nowhere", winState{true, "notes.txt - Notepad"}, false, true},
+		{"other title, file still shown elsewhere", winState{true, "notes.txt - Notepad"}, true, false},
+	}
+	for _, c := range cases {
+		if got := quitDone(c.st, testPath, func() bool { return c.elsewhere }); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestWaitClosed(t *testing.T) {
+	ours := "wakebit-time.txt - Notepad"
+	_, p := newTestPacer(time.Second)
+	if err := waitClosed(p, titleSeq(winState{true, ours}, winState{false, ""}), testPath, func() bool { return false }); err != nil {
+		t.Fatalf("window closed: %v", err)
+	}
+	clk, p := newTestPacer(time.Second)
+	if err := waitClosed(p, titleSeq(winState{true, ours}), testPath, func() bool { return false }); err == nil {
+		t.Fatal("prompt left open must be an error")
+	} else if clk.t.After(p.deadline) {
+		t.Fatal("waited past the deadline")
+	}
+	_, p = newTestPacer(time.Second)
+	err := waitClosed(p, titleSeq(winState{true, "notes.txt - Notepad"}), testPath, func() bool { return true })
+	if err == nil || !strings.Contains(err.Error(), "switched or closed") {
+		t.Fatalf("tab switched while our file is still shown: got %v", err)
 	}
 }
 

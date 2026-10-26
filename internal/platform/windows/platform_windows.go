@@ -29,6 +29,7 @@ var (
 	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
 	procBringWindowToTop    = user32.NewProc("BringWindowToTop")
 	procShowWindow          = user32.NewProc("ShowWindow")
+	procShowWindowAsync     = user32.NewProc("ShowWindowAsync")
 	procIsIconic            = user32.NewProc("IsIconic")
 	procGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
 	procAttachThreadInput   = user32.NewProc("AttachThreadInput")
@@ -59,11 +60,12 @@ const (
 
 	editorWaitTimeout = 10 * time.Second
 
-	// quitTimeout caps Quit as a whole (focus, save, close, wait); Stop
-	// waits for it on the tray thread.
+	// quitTimeout is Quit's single overall deadline (foreground, quiet
+	// period, save, close, wait); Stop waits for it on the tray thread.
 	quitTimeout = 3 * time.Second
-	// quitSaveWait lets Notepad process Ctrl+S before we close.
-	quitSaveWait = 150 * time.Millisecond
+	// quitForegroundWait caps how long Quit waits for Notepad to become the
+	// foreground window before giving up.
+	quitForegroundWait = 500 * time.Millisecond
 )
 
 // reasonContext mirrors REASON_CONTEXT with the SimpleReasonString variant.
@@ -418,28 +420,39 @@ func (e *editor) Close() { e.hwnd = 0 }
 
 // Quit saves our temp file (Ctrl+S) and closes it so no "save changes?"
 // prompt appears: classic Notepad gets WM_CLOSE, tabbed Windows 11 Notepad
-// gets Ctrl+W so only our tab closes (see quitMethod). It never relocates
-// the window: it acts only on the HWND the editor already holds, and only
-// while that HWND is a "Notepad"-class window whose title names our file and
-// which is the foreground window, re-checked right before each keystroke or
-// message. A window that is already gone is success. It returns an error and
-// leaves the window alone if any check fails, a modifier key is held, or the
-// window is still open when quitTimeout runs out (e.g. a prompt is showing);
-// it never kills a process.
+// gets Ctrl+W so only our tab closes (see quitMethod).
+//
+// Safety rules:
+//   - It acts only on the HWND the editor already holds and never searches
+//     for another window; a window that is already gone is success.
+//   - Before each input (Ctrl+S, then WM_CLOSE or Ctrl+W) it waits for the
+//     user to have been idle for quitQuiet and then re-checks that the HWND
+//     is a "Notepad"-class window whose title names our file, that it is the
+//     foreground window and that no modifier key is down.
+//   - It closes only after the title has lost its "*" (file saved); if the
+//     save does not complete (read-only file, Save As or error dialog) the
+//     window and any dialog are left alone.
+//   - Every wait shares one deadline (quitTimeout); it never blocks on the
+//     Notepad process (only asynchronous Win32 calls) and never kills it.
+//
+// It returns an error, leaving the window open, whenever a check fails.
 func (e *editor) Quit() error {
-	deadline := time.Now().Add(quitTimeout)
-	h, name := e.hwnd, filepath.Base(e.path)
+	p := newQuitPacer(quitTimeout)
+	h, path, name := e.hwnd, e.path, filepath.Base(e.path)
 	if h == 0 || !windows.IsWindow(h) {
 		return nil
 	}
-	if !isEditorWindow(h, e.path) {
+	if !isEditorWindow(h, path) {
 		return fmt.Errorf("notepad window no longer shows %s; left open", name)
+	}
+	if err := quitForeground(h, path, p); err != nil {
+		return err
 	}
 	ready := func() error {
 		if modifiersHeld() {
 			return errors.New("a modifier key is held; notepad left open")
 		}
-		if !isEditorWindow(h, e.path) {
+		if !isEditorWindow(h, path) {
 			return fmt.Errorf("notepad window no longer shows %s; left open", name)
 		}
 		if fg := windows.GetForegroundWindow(); fg != h {
@@ -447,23 +460,28 @@ func (e *editor) Quit() error {
 		}
 		return nil
 	}
-	if err := e.Focus(); err != nil {
-		return fmt.Errorf("focus before close: %w", err)
-	}
-	if e.hwnd != h { // Focus never relocates a valid window; be strict anyway
-		return errors.New("notepad window changed; left open")
-	}
-	if err := ready(); err != nil {
-		return err
+	if err := waitQuiet(p, e.p.IdleFor, ready); err != nil {
+		return fmt.Errorf("before save: %w", err)
 	}
 	if err := e.p.sendKeys(ctrlChord('S')); err != nil {
 		return fmt.Errorf("save: %w", err)
 	}
-	time.Sleep(quitSaveWait)
-	if err := ready(); err != nil {
+	read := func() winState {
+		if !windows.IsWindow(h) {
+			return winState{}
+		}
+		return winState{alive: true, title: windowText(h)}
+	}
+	if err := waitSaved(p, read, path); err != nil {
+		if errors.Is(err, errQuitWindowGone) {
+			return nil
+		}
 		return err
 	}
 	how := quitMethod(hasChildClass(h, "Edit"))
+	if err := waitQuiet(p, e.p.IdleFor, ready); err != nil {
+		return fmt.Errorf("before close: %w", err)
+	}
 	switch how {
 	case quitByWMClose:
 		// PostMessage, not SendMessage: a hung Notepad cannot block us.
@@ -475,23 +493,42 @@ func (e *editor) Quit() error {
 			return fmt.Errorf("close tab: %w", err)
 		}
 	}
-	for {
-		alive := windows.IsWindow(h)
-		title := ""
-		if alive {
-			title = windowText(h)
-		}
-		if quitDone(alive, title, e.path, how) {
-			return nil
-		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("notepad window for %s still open after %s (a prompt may be showing); left open", name, quitTimeout)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	return waitClosed(p, read, path, func() bool { return findWindow(path) != 0 })
 }
 
-// modifiersHeld reports whether Shift, Ctrl, Alt or Win is physically down.
+// quitForeground brings the held window h to the foreground for Quit,
+// gently: no AttachThreadInput, no synthetic ALT tap, and only asynchronous
+// calls (ShowWindowAsync rather than ShowWindow; no BringWindowToTop, which
+// is a synchronous SetWindowPos into Notepad's thread and could block on a
+// hung Notepad). It never looks for another window. If h is not the
+// foreground window within quitForegroundWait (capped by p) it refuses.
+func quitForeground(h windows.HWND, path string, p quitPacer) error {
+	if !isEditorWindow(h, path) {
+		return fmt.Errorf("notepad window no longer shows %s; left open", filepath.Base(path))
+	}
+	if windows.GetForegroundWindow() == h {
+		return nil
+	}
+	if r, _, _ := procIsIconic.Call(uintptr(h)); r != 0 {
+		procShowWindowAsync.Call(uintptr(h), swRestore)
+	}
+	procSetForegroundWindow.Call(uintptr(h))
+	w := p.within(quitForegroundWait)
+	for windows.GetForegroundWindow() != h {
+		if !w.wait() {
+			return errors.New("could not bring notepad to the foreground; left open")
+		}
+	}
+	if !isEditorWindow(h, path) {
+		return fmt.Errorf("notepad window no longer shows %s; left open", filepath.Base(path))
+	}
+	return nil
+}
+
+// modifiersHeld reports whether Shift, Ctrl, Alt or Win is down.
+// GetAsyncKeyState also reflects keys injected with SendInput (by us or any
+// other app), not only physical keys; ongoing physical typing is covered by
+// the quiet-period check (waitQuiet), not by this.
 func modifiersHeld() bool {
 	var st []uint16
 	for _, vk := range []uintptr{vkShift, vkControl, vkMenu, vkLWin, vkRWin} {

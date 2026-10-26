@@ -5,6 +5,8 @@
 package winplat
 
 import (
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -158,18 +160,123 @@ func quitMethod(hasEditChild bool) quitHow {
 	return quitByCloseTab
 }
 
+const (
+	// quitQuiet is how long the user must have made no input before Quit
+	// sends anything, so our keys never interleave with keys the user is
+	// typing (or that are still queued).
+	quitQuiet = 300 * time.Millisecond
+	// quitPoll is how often Quit re-checks while it waits.
+	quitPoll = 20 * time.Millisecond
+)
+
+// quitPacer carries Quit's single overall deadline through every wait, with
+// an injectable clock so the waits are testable and provably bounded.
+type quitPacer struct {
+	deadline time.Time
+	now      func() time.Time
+	sleep    func(time.Duration)
+}
+
+func newQuitPacer(budget time.Duration) quitPacer {
+	return quitPacer{deadline: time.Now().Add(budget), now: time.Now, sleep: time.Sleep}
+}
+
+// wait sleeps one poll interval (never past the deadline) and reports
+// whether the deadline had not yet passed, i.e. whether to check again.
+func (p quitPacer) wait() bool {
+	left := p.deadline.Sub(p.now())
+	if left <= 0 {
+		return false
+	}
+	p.sleep(min(quitPoll, left))
+	return true
+}
+
+// within returns a pacer whose deadline is d from now, capped at p's.
+func (p quitPacer) within(d time.Duration) quitPacer {
+	if dl := p.now().Add(d); dl.Before(p.deadline) {
+		p.deadline = dl
+	}
+	return p
+}
+
+// waitQuiet waits (bounded by p) until the user has been idle for at least
+// quitQuiet, then runs check (the full "safe to send input" check) and
+// returns its result. It fails if the quiet period does not arrive in time.
+func waitQuiet(p quitPacer, idleFor func() time.Duration, check func() error) error {
+	for idleFor() < quitQuiet {
+		if !p.wait() {
+			return errors.New("user input did not pause before the deadline; notepad left open")
+		}
+	}
+	return check()
+}
+
+// winState is what Quit observes of the held Notepad window.
+type winState struct {
+	alive bool
+	title string
+}
+
+// errQuitWindowGone means the window disappeared while Quit was waiting.
+var errQuitWindowGone = errors.New("notepad window is gone")
+
+// waitSaved waits (bounded by p) for our file to be saved after Ctrl+S: the
+// window title must keep naming our file and lose its leading "*". It fails,
+// so that nothing is closed, if the "*" never clears (read-only or locked
+// file, a Save As or error dialog), the title stops naming our file, or the
+// window disappears (errQuitWindowGone).
+func waitSaved(p quitPacer, read func() winState, path string) error {
+	for {
+		st := read()
+		switch {
+		case !st.alive:
+			return errQuitWindowGone
+		case !titleMatches(st.title, path):
+			return fmt.Errorf("notepad title changed to %q while saving; left open", st.title)
+		case !strings.HasPrefix(st.title, "*"):
+			return nil
+		}
+		if !p.wait() {
+			return fmt.Errorf("%s was not saved (title %q; read-only file or a dialog?); left open", filepath.Base(path), st.title)
+		}
+	}
+}
+
 // quitDone reports whether our document is closed: the window is gone, or
-// (tabbed Notepad) the window now shows another tab.
-func quitDone(alive bool, title, path string, how quitHow) bool {
-	if !alive {
+// it no longer names our file and no Notepad window shows our file
+// (shownElsewhere re-enumerates; it is only called in that case). A title
+// change alone is not proof: tabbed Notepad may merely have switched tabs.
+func quitDone(st winState, path string, shownElsewhere func() bool) bool {
+	if !st.alive {
 		return true
 	}
-	return how == quitByCloseTab && !titleMatches(title, path)
+	if titleMatches(st.title, path) {
+		return false
+	}
+	return !shownElsewhere()
+}
+
+// waitClosed waits (bounded by p) until quitDone holds after the close step.
+func waitClosed(p quitPacer, read func() winState, path string, shownElsewhere func() bool) error {
+	name := filepath.Base(path)
+	for {
+		st := read()
+		if quitDone(st, path, shownElsewhere) {
+			return nil
+		}
+		if !p.wait() {
+			if st.alive && !titleMatches(st.title, path) {
+				return fmt.Errorf("notepad tab no longer shows %s (switched or closed) but %s is still open in notepad", name, name)
+			}
+			return fmt.Errorf("notepad window for %s still open (a prompt may be showing); left open", name)
+		}
+	}
 }
 
 // modifierHeld reports whether any GetAsyncKeyState result has the "key is
-// down" (high) bit set. A physically held Shift/Alt/Win would turn our
-// Ctrl+S into another shortcut (Ctrl+Shift+S is "Save as").
+// down" (high) bit set. A held Shift/Alt/Win would turn our Ctrl+S into
+// another shortcut (Ctrl+Shift+S is "Save as").
 func modifierHeld(states []uint16) bool {
 	for _, s := range states {
 		if s&0x8000 != 0 {
