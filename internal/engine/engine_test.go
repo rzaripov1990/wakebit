@@ -14,15 +14,25 @@ import (
 )
 
 type fakePlatform struct {
-	mu         sync.Mutex
-	sleepCalls []bool
-	pos        [2]int
-	moves      [][2]int
-	idle       time.Duration
-	editors    []*fakeEditor
-	opens      int
-	focusErr   error
-	typeBlock  bool
+	mu          sync.Mutex
+	sleepCalls  []bool
+	pos         [2]int
+	moves       [][2]int
+	idle        time.Duration
+	editors     []*fakeEditor
+	opens       int
+	focusErr    error
+	typeBlock   bool
+	openErr     error
+	openGate    chan struct{} // if non-nil, OpenEditor signals openEntered and waits on it
+	openEntered chan struct{}
+	idleCalls   int
+	focusCalls  int
+	// Simulated user mouse move: once len(moves) reaches userMoveAfter,
+	// CursorPos reports userPos (as if the user moved the mouse).
+	userMoveAfter int
+	userPos       [2]int
+	userMoved     bool
 }
 
 func newFake() *fakePlatform { return &fakePlatform{idle: time.Hour, pos: [2]int{100, 200}} }
@@ -36,6 +46,9 @@ func (f *fakePlatform) PreventSleep(on bool) error {
 func (f *fakePlatform) CursorPos() (int, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.userMoveAfter > 0 && !f.userMoved && len(f.moves) >= f.userMoveAfter {
+		f.pos, f.userMoved = f.userPos, true
+	}
 	return f.pos[0], f.pos[1], nil
 }
 func (f *fakePlatform) MoveCursor(x, y int) error {
@@ -48,12 +61,23 @@ func (f *fakePlatform) MoveCursor(x, y int) error {
 func (f *fakePlatform) IdleFor() time.Duration {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.idleCalls++
 	return f.idle
 }
 func (f *fakePlatform) OpenEditor(path string) (Editor, error) {
 	f.mu.Lock()
+	gate, entered := f.openGate, f.openEntered
+	f.mu.Unlock()
+	if gate != nil {
+		entered <- struct{}{}
+		<-gate // blocks like the real OpenEditor (no ctx)
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.opens++
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
 	e := &fakeEditor{p: f, path: path}
 	f.editors = append(f.editors, e)
 	return e, nil
@@ -80,6 +104,7 @@ func (e *fakeEditor) Focus() error {
 	e.p.mu.Lock()
 	defer e.p.mu.Unlock()
 	e.focus++
+	e.p.focusCalls++
 	return e.p.focusErr
 }
 func (e *fakeEditor) Type(ctx context.Context, text string, delay func() time.Duration) error {
@@ -275,4 +300,115 @@ func TestModeSwitchWhileWorkingChangesBehaviour(t *testing.T) {
 	if len(s) != 2 || !s[0] || s[1] {
 		t.Fatalf("sleep calls should be [true false], got %v", s)
 	}
+}
+
+func TestOpenEditorFailureBacksOff(t *testing.T) {
+	f := newFake()
+	f.openErr = errors.New("notepad window did not appear")
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, 2*time.Millisecond)
+	// Each loop iteration polls IdleFor once (a failed open returns before
+	// any re-check), so idleCalls counts cycles.
+	waitFor(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.idleCalls >= 4*(openBackoffCycles+1) })
+	e.Stop()
+	f.mu.Lock()
+	cycles, opens := f.idleCalls, f.opens
+	f.mu.Unlock()
+	maxOpens := cycles/(openBackoffCycles+1) + 1
+	if opens < 1 || opens > maxOpens {
+		t.Fatalf("OpenEditor called %d times over %d cycles, want 1..%d", opens, cycles, maxOpens)
+	}
+}
+
+func TestOpenEditorRecoversAfterBackoff(t *testing.T) {
+	f := newFake()
+	f.openErr = errors.New("timeout")
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, 2*time.Millisecond)
+	waitFor(t, func() bool { _, _, _, _, o := f.snapshot(); return o >= 1 })
+	f.mu.Lock()
+	f.openErr = nil
+	f.mu.Unlock()
+	waitFor(t, func() bool { _, _, _, ty, _ := f.snapshot(); return len(ty) >= 1 })
+	e.Stop()
+}
+
+func blockingOpenFake() *fakePlatform {
+	f := newFake()
+	f.openGate = make(chan struct{})
+	f.openEntered = make(chan struct{}, 1)
+	return f
+}
+
+func TestNoFocusWhenUserReturnsDuringOpenEditor(t *testing.T) {
+	f := blockingOpenFake()
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, time.Hour)
+	<-f.openEntered
+	f.mu.Lock()
+	f.idle = 0 // user came back while Notepad was starting
+	f.mu.Unlock()
+	close(f.openGate)
+	waitFor(t, func() bool { _, _, _, _, o := f.snapshot(); return o == 1 })
+	time.Sleep(30 * time.Millisecond)
+	e.Stop()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.focusCalls != 0 {
+		t.Fatalf("Focus called %d times after user returned", f.focusCalls)
+	}
+}
+
+func TestNoFocusWhenStoppedDuringOpenEditor(t *testing.T) {
+	f := blockingOpenFake()
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, time.Hour)
+	<-f.openEntered
+	done := make(chan struct{})
+	go func() { e.Stop(); close(done) }()
+	time.Sleep(30 * time.Millisecond) // let Stop cancel the loop context
+	close(f.openGate)
+	<-done
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.focusCalls != 0 {
+		t.Fatalf("Focus called %d times after Stop", f.focusCalls)
+	}
+}
+
+func TestLightNudgeYieldsToUserMouse(t *testing.T) {
+	f := newFake()
+	f.userMoveAfter = 3
+	f.userPos = [2]int{500, 600}
+	e := New(f, t.TempDir())
+	e.nudgeMin, e.nudgeMax, e.nudgeStep = 5*time.Second, 5*time.Second, 2*time.Millisecond
+	e.Apply(config.ModeLight, true, time.Hour)
+	waitFor(t, func() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.userMoved })
+	time.Sleep(30 * time.Millisecond)
+	start := time.Now()
+	e.Stop()
+	if time.Since(start) > time.Second {
+		t.Fatal("nudge kept running after user took over")
+	}
+	_, m, p, _, _ := f.snapshot()
+	if p != f.userPos {
+		t.Fatalf("cursor moved away from user position: %v", p)
+	}
+	if len(m) != 3 {
+		t.Fatalf("engine kept moving the cursor after the user took over: %v", m)
+	}
+	for _, mv := range m {
+		if mv == [2]int{100, 200} {
+			t.Fatalf("engine restored original position over user input: %v", m)
+		}
+	}
+}
+
+func TestApplyNonPositiveIntervalDoesNotPanic(t *testing.T) {
+	f := newFake()
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeLight, true, 0)
+	waitFor(t, func() bool { _, m, _, _, _ := f.snapshot(); return len(m) > 0 })
+	e.Apply(config.ModeLight, true, -time.Second)
+	e.Stop()
 }

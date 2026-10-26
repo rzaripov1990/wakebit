@@ -15,6 +15,19 @@ import (
 
 const minIdle = 5 * time.Second
 
+// openBackoffCycles is how many cycles Full mode skips after OpenEditor
+// fails, so a Notepad that never shows its window is not respawned every
+// interval.
+const openBackoffCycles = 3
+
+// defaultInterval replaces a non-positive interval (time.NewTicker panics
+// on those).
+const defaultInterval = 60 * time.Second
+
+// userMoveTolerance is how far (px) the cursor may be from where the Light
+// nudge last put it before we conclude the user is moving the mouse.
+const userMoveTolerance = 2
+
 // Engine runs the Working/Resting state machine.
 type Engine struct {
 	p       Platform
@@ -45,6 +58,9 @@ func New(p Platform, tempDir string) *Engine {
 
 // Apply is idempotent: it (re)starts or stops the loop only when state changes.
 func (e *Engine) Apply(mode config.Mode, working bool, interval time.Duration) {
+	if interval <= 0 {
+		interval = defaultInterval
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if working && e.running && e.mode == mode && e.interval == interval {
@@ -91,11 +107,10 @@ func (e *Engine) stopLoopLocked() {
 
 func (e *Engine) loop(ctx context.Context, done chan struct{}, mode config.Mode, interval time.Duration) {
 	defer close(done)
-	var ed Editor
-	var path string
+	var fs fullState
 	defer func() {
-		if ed != nil {
-			ed.Close()
+		if fs.ed != nil {
+			fs.ed.Close()
 		}
 	}()
 	t := time.NewTicker(interval)
@@ -104,7 +119,7 @@ func (e *Engine) loop(ctx context.Context, done chan struct{}, mode config.Mode,
 		if e.p.IdleFor() >= minIdle {
 			switch mode {
 			case config.ModeFull:
-				e.fullCycle(ctx, &ed, &path)
+				e.fullCycle(ctx, &fs)
 			default:
 				e.lightCycle(ctx)
 			}
@@ -129,13 +144,27 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// lightCycle nudges the cursor a few pixels back and forth and then puts it
+// back. If the cursor is found somewhere the engine did not put it, the user
+// has taken over: the nudge stops and the original position is NOT restored.
 func (e *Engine) lightCycle(ctx context.Context) {
 	x, y, err := e.p.CursorPos()
 	if err != nil {
 		log.Printf("engine: cursor pos: %v", err)
 		return
 	}
+	lx, ly := x, y // where the engine last put the cursor
+	userMoved := func() bool {
+		cx, cy, err := e.p.CursorPos()
+		if err != nil {
+			return false
+		}
+		return abs(cx-lx) > userMoveTolerance || abs(cy-ly) > userMoveTolerance
+	}
 	defer func() {
+		if userMoved() {
+			return
+		}
 		if err := e.p.MoveCursor(x, y); err != nil {
 			log.Printf("engine: restore cursor: %v", err)
 		}
@@ -148,41 +177,70 @@ func (e *Engine) lightCycle(ctx context.Context) {
 	path := [][2]int{{1, 0}, {2, 1}, {3, 2}, {2, 1}, {1, 0}}
 	deadline := time.Now().Add(dur)
 	for i := 0; ctx.Err() == nil && time.Now().Before(deadline); i++ {
+		if userMoved() {
+			return // deferred restore sees the move too and skips
+		}
 		d := path[i%len(path)]
 		if err := e.p.MoveCursor(x+d[0], y+d[1]); err != nil {
 			log.Printf("engine: move cursor: %v", err)
 			return
 		}
+		lx, ly = x+d[0], y+d[1]
 		if !sleepCtx(ctx, e.nudgeStep) {
 			return
 		}
 	}
 }
 
-func (e *Engine) fullCycle(ctx context.Context, ed *Editor, path *string) {
-	if *ed == nil {
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// fullState is Full mode's per-loop state.
+type fullState struct {
+	ed   Editor
+	path string
+	skip int // cycles left to skip after an OpenEditor failure
+}
+
+func (e *Engine) fullCycle(ctx context.Context, fs *fullState) {
+	if fs.ed == nil {
+		if fs.skip > 0 {
+			fs.skip--
+			return
+		}
 		p := filepath.Join(e.tempDir, "wakebit-time.txt")
 		if err := os.WriteFile(p, []byte(time.Now().Format("15:04:05")+"\n"), 0o644); err != nil {
 			log.Printf("engine: write time file: %v", err)
 			return
 		}
+		// OpenEditor may block for seconds and takes no ctx.
 		opened, err := e.p.OpenEditor(p)
 		if err != nil {
-			log.Printf("engine: open editor: %v", err)
+			log.Printf("engine: open editor (retrying after %d cycles): %v", openBackoffCycles, err)
+			fs.skip = openBackoffCycles
 			return
 		}
-		*ed, *path = opened, p
+		fs.ed, fs.path = opened, p
+		// The world may have changed while we waited: never grab focus after
+		// Stop or once the user is back.
+		if ctx.Err() != nil || e.p.IdleFor() < minIdle {
+			return
+		}
 	}
-	if err := (*ed).Focus(); err != nil {
+	if err := fs.ed.Focus(); err != nil {
 		log.Printf("engine: focus editor (will retry next tick): %v", err)
-		(*ed).Close()
-		*ed = nil
+		fs.ed.Close()
+		fs.ed = nil
 		return
 	}
 	text := time.Now().Format("15:04:05")
-	if err := (*ed).Type(ctx, text, e.typeDelay); err != nil && ctx.Err() == nil {
+	if err := fs.ed.Type(ctx, text, e.typeDelay); err != nil && ctx.Err() == nil {
 		log.Printf("engine: type: %v", err)
-		(*ed).Close()
-		*ed = nil
+		fs.ed.Close()
+		fs.ed = nil
 	}
 }
