@@ -42,5 +42,5 @@ func main() {
 	}
 	e.Stop()
 	log.Printf("stopped; sleep blocking released")
-	fmt.Println("Expected: Notepad shows wakebit-time.txt with the current time typed after the first line.")
+	fmt.Println("Expected: Notepad shows wakebit-time.txt; the caret starts at the beginning of the file, so the typed time appears at the very start of the first line, run together with the written time (e.g. 16:05:1216:05:07); later cycles append without a newline.")
 }

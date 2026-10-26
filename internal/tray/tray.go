@@ -29,7 +29,6 @@ func onReady(s *state, auto Autostart) {
 	refresh := func() {
 		systray.SetIcon(icon(s.cfg.Working))
 		systray.SetTooltip(tooltip(s.cfg))
-		systray.SetTitle(tooltip(s.cfg))
 		mToggle.SetTitle(toggleLabel(s.cfg))
 		setChecked(mFull, s.cfg.Mode == config.ModeFull)
 		setChecked(mLight, s.cfg.Mode == config.ModeLight)
