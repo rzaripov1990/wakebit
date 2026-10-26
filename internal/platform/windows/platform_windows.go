@@ -308,7 +308,7 @@ func (e *editor) Focus() error {
 	if !isEditorWindow(e.hwnd, e.path) {
 		e.hwnd = findWindow(e.path)
 		if e.hwnd == 0 {
-			return fmt.Errorf("editor window for %s is gone", filepath.Base(e.path))
+			return fmt.Errorf("editor window for %s: %w", filepath.Base(e.path), engine.ErrEditorGone)
 		}
 	}
 	if r, _, _ := procIsIconic.Call(uintptr(e.hwnd)); r != 0 {
@@ -391,6 +391,9 @@ func (e *editor) Type(ctx context.Context, text string, delay func() time.Durati
 	for _, r := range text {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if !windows.IsWindow(e.hwnd) {
+			return fmt.Errorf("editor window for %s: %w", filepath.Base(e.path), engine.ErrEditorGone)
 		}
 		if fg := windows.GetForegroundWindow(); fg != e.hwnd {
 			return fmt.Errorf("editor lost focus (foreground is %#x)", uintptr(fg))
