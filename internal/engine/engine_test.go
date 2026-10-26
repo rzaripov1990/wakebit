@@ -1,11 +1,14 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +36,11 @@ type fakePlatform struct {
 	userMoveAfter int
 	userPos       [2]int
 	userMoved     bool
+	// Quitter support: when quitter is set, OpenEditor returns editors that
+	// implement Quitter. events records "quit"/"close" calls in order.
+	quitter bool
+	quitErr error
+	events  []string
 }
 
 func newFake() *fakePlatform { return &fakePlatform{idle: time.Hour, pos: [2]int{100, 200}} }
@@ -80,6 +88,9 @@ func (f *fakePlatform) OpenEditor(path string) (Editor, error) {
 	}
 	e := &fakeEditor{p: f, path: path}
 	f.editors = append(f.editors, e)
+	if f.quitter {
+		return &quitFakeEditor{e}, nil
+	}
 	return e, nil
 }
 func (f *fakePlatform) snapshot() (sleep []bool, moves [][2]int, pos [2]int, typed []string, opens int) {
@@ -120,7 +131,27 @@ func (e *fakeEditor) Type(ctx context.Context, text string, delay func() time.Du
 	e.typed = append(e.typed, text)
 	return nil
 }
-func (e *fakeEditor) Close() {}
+func (e *fakeEditor) Close() {
+	e.p.mu.Lock()
+	defer e.p.mu.Unlock()
+	e.p.events = append(e.p.events, "close")
+}
+
+// quitFakeEditor is a fakeEditor that also implements Quitter.
+type quitFakeEditor struct{ *fakeEditor }
+
+func (e *quitFakeEditor) Quit() error {
+	e.p.mu.Lock()
+	defer e.p.mu.Unlock()
+	e.p.events = append(e.p.events, "quit")
+	return e.p.quitErr
+}
+
+func (f *fakePlatform) eventLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.events...)
+}
 
 func newTestEngine(p Platform, dir string) *Engine {
 	e := New(p, dir)
@@ -411,4 +442,120 @@ func TestApplyNonPositiveIntervalDoesNotPanic(t *testing.T) {
 	waitFor(t, func() bool { _, m, _, _, _ := f.snapshot(); return len(m) > 0 })
 	e.Apply(config.ModeLight, true, -time.Second)
 	e.Stop()
+}
+
+func quitFake() *fakePlatform {
+	f := newFake()
+	f.quitter = true
+	return f
+}
+
+func countEvent(ev []string, name string) int {
+	n := 0
+	for _, v := range ev {
+		if v == name {
+			n++
+		}
+	}
+	return n
+}
+
+// assertQuitThenClose checks the log is exactly [quit close].
+func assertQuitThenClose(t *testing.T, ev []string) {
+	t.Helper()
+	if len(ev) != 2 || ev[0] != "quit" || ev[1] != "close" {
+		t.Fatalf("want [quit close], got %v", ev)
+	}
+}
+
+func startFullAndWaitTyped(t *testing.T, f *fakePlatform) *Engine {
+	t.Helper()
+	e := newTestEngine(f, t.TempDir())
+	e.Apply(config.ModeFull, true, time.Hour)
+	waitFor(t, func() bool { _, _, _, ty, _ := f.snapshot(); return len(ty) >= 1 })
+	return e
+}
+
+func TestQuitCalledOnceBeforeCloseOnStop(t *testing.T) {
+	f := quitFake()
+	e := startFullAndWaitTyped(t, f)
+	start := time.Now()
+	e.Stop()
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Fatalf("Stop took %v with an immediate Quit", d)
+	}
+	assertQuitThenClose(t, f.eventLog())
+	e.Stop() // already stopped: no second Quit
+	if n := countEvent(f.eventLog(), "quit"); n != 1 {
+		t.Fatalf("Quit called %d times", n)
+	}
+}
+
+func TestQuitCalledOnSwitchToResting(t *testing.T) {
+	f := quitFake()
+	e := startFullAndWaitTyped(t, f)
+	e.Apply(config.ModeFull, false, time.Hour)
+	assertQuitThenClose(t, f.eventLog())
+}
+
+func TestQuitCalledOnModeChangeFullToLight(t *testing.T) {
+	f := quitFake()
+	e := startFullAndWaitTyped(t, f)
+	e.Apply(config.ModeLight, true, time.Hour)
+	assertQuitThenClose(t, f.eventLog())
+	e.Stop()
+	if n := countEvent(f.eventLog(), "quit"); n != 1 {
+		t.Fatalf("Quit called %d times", n)
+	}
+}
+
+func TestNoQuitForEditorWithoutQuitter(t *testing.T) {
+	f := newFake()
+	e := startFullAndWaitTyped(t, f)
+	e.Stop()
+	ev := f.eventLog()
+	if countEvent(ev, "quit") != 0 || countEvent(ev, "close") != 1 {
+		t.Fatalf("want [close], got %v", ev)
+	}
+}
+
+func TestQuitErrorDoesNotBlockStopOrSleepRelease(t *testing.T) {
+	f := quitFake()
+	f.quitErr = errors.New("save dialog still open")
+	var buf syncBuffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	e := startFullAndWaitTyped(t, f)
+	done := make(chan struct{})
+	go func() { e.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop hung after Quit error")
+	}
+	assertQuitThenClose(t, f.eventLog())
+	s, _, _, _, _ := f.snapshot()
+	if len(s) != 2 || !s[0] || s[1] {
+		t.Fatalf("sleep calls should be [true false], got %v", s)
+	}
+	if !strings.Contains(buf.String(), "save dialog still open") {
+		t.Fatalf("Quit error not logged; log: %q", buf.String())
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

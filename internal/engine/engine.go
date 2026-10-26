@@ -108,11 +108,7 @@ func (e *Engine) stopLoopLocked() {
 func (e *Engine) loop(ctx context.Context, done chan struct{}, mode config.Mode, interval time.Duration) {
 	defer close(done)
 	var fs fullState
-	defer func() {
-		if fs.ed != nil {
-			fs.ed.Close()
-		}
-	}()
+	defer fs.release()
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -204,6 +200,21 @@ type fullState struct {
 	ed   Editor
 	path string
 	skip int // cycles left to skip after an OpenEditor failure
+}
+
+// release closes the editor window (when the editor supports Quitter) and
+// then the handle. It runs when the loop ends; Stop waits for it.
+func (fs *fullState) release() {
+	if fs.ed == nil {
+		return
+	}
+	if q, ok := fs.ed.(Quitter); ok {
+		if err := q.Quit(); err != nil {
+			log.Printf("engine: close editor window: %v", err)
+		}
+	}
+	fs.ed.Close()
+	fs.ed = nil
 }
 
 func (e *Engine) fullCycle(ctx context.Context, fs *fullState) {
