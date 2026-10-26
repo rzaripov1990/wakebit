@@ -21,35 +21,31 @@ type candidate struct {
 // notepadClass is the window class of classic and Windows 11 Notepad.
 const notepadClass = "Notepad"
 
-// titleMatches reports whether a window title refers to the file at path,
-// i.e. contains its base name (case-insensitive, as Windows file names are).
-// Notepad titles look like "wakebit-time.txt - Notepad" or, when modified,
-// "*wakebit-time.txt - Notepad".
+// titleMatches reports whether a Notepad window title refers to the file at
+// path: an optional leading "*" (unsaved changes), then exactly the file's
+// base name (case-insensitive, as Windows file names are), then " - ".
+// Whatever follows (the localized app name) is ignored. Examples that match:
+// "wakebit-time.txt - Notepad", "*wakebit-time.txt - Блокнот".
 func titleMatches(title, path string) bool {
 	base := filepath.Base(strings.ReplaceAll(path, `\`, "/"))
 	if base == "" || base == "." || base == "/" {
 		return false
 	}
-	return strings.Contains(strings.ToLower(title), strings.ToLower(base))
+	t := strings.TrimPrefix(title, "*")
+	prefix := base + " - "
+	return len(t) >= len(prefix) && strings.EqualFold(t[:len(prefix)], prefix)
 }
 
-// pickWindow chooses the editor window for path among candidates. A Notepad
-// class window wins over any other window whose title merely matches; it
-// returns 0 when nothing matches.
+// pickWindow returns the Notepad window showing path, or 0. Windows of any
+// other class are never chosen, even when their title matches, so keystrokes
+// cannot land in another application.
 func pickWindow(cands []candidate, path string) uintptr {
-	var fallback uintptr
 	for _, c := range cands {
-		if c.hwnd == 0 || !titleMatches(c.title, path) {
-			continue
-		}
-		if strings.EqualFold(c.class, notepadClass) {
+		if c.hwnd != 0 && strings.EqualFold(c.class, notepadClass) && titleMatches(c.title, path) {
 			return c.hwnd
 		}
-		if fallback == 0 {
-			fallback = c.hwnd
-		}
 	}
-	return fallback
+	return 0
 }
 
 // toAbsolute maps a virtual-desktop pixel coordinate to the 0..65535 range
@@ -59,13 +55,7 @@ func toAbsolute(v, origin, size int) int32 {
 		return 0
 	}
 	n := int64(v-origin) * 65535 / int64(size-1)
-	if n < 0 {
-		n = 0
-	}
-	if n > 65535 {
-		n = 65535
-	}
-	return int32(n)
+	return int32(min(max(n, 0), 65535))
 }
 
 // injectTolerance is how close (ms) the system's last-input tick must be to
@@ -106,7 +96,7 @@ func (t *idleTracker) injected(now uint32) {
 }
 
 func (t *idleTracker) isOwnLocked(tick uint32) bool {
-	for i := 0; i < t.n; i++ {
+	for i := range t.n {
 		d := int32(tick - t.ticks[i])
 		if d < 0 {
 			d = -d
@@ -130,9 +120,6 @@ func (t *idleTracker) idle(now, lastInput uint32) time.Duration {
 		}
 		t.haveUser = true
 	}
-	d := int32(now - t.lastUser)
-	if d < 0 {
-		d = 0
-	}
+	d := max(int32(now-t.lastUser), 0)
 	return time.Duration(d) * time.Millisecond
 }

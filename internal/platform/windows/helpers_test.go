@@ -15,6 +15,11 @@ func TestTitleMatches(t *testing.T) {
 		{"wakebit-time.txt - Notepad", true},
 		{"*wakebit-time.txt - Notepad", true},
 		{"WAKEBIT-TIME.TXT - Блокнот", true},
+		{"old-wakebit-time.txt - Notepad", false},
+		{"wakebit-time.txt.bak - Notepad", false},
+		{"**wakebit-time.txt - Notepad", false},
+		{"wakebit-time.txt", false},
+		{"wakebit-time.txt -", false},
 		{"Untitled - Notepad", false},
 		{"", false},
 	}
@@ -28,21 +33,22 @@ func TestTitleMatches(t *testing.T) {
 	}
 }
 
-func TestPickWindowPrefersNotepadClass(t *testing.T) {
+func TestPickWindowNotepadOnly(t *testing.T) {
 	p := "/tmp/wakebit-time.txt"
 	cands := []candidate{
 		{hwnd: 1, title: "Untitled - Notepad", class: "Notepad"},
-		{hwnd: 2, title: "wakebit-time.txt - Explorer", class: "CabinetWClass"},
-		{hwnd: 3, title: "wakebit-time.txt - Notepad", class: "Notepad"},
+		{hwnd: 2, title: "wakebit-time.txt - Visual Studio Code", class: "Chrome_WidgetWin_1"},
+		{hwnd: 3, title: "wakebit-time.txt - Notepad++", class: "Notepad++"},
+		{hwnd: 4, title: "old-wakebit-time.txt - Notepad", class: "Notepad"},
+		{hwnd: 5, title: "wakebit-time.txt.bak - Notepad", class: "Notepad"},
+		{hwnd: 6, title: "*wakebit-time.txt - Notepad", class: "Notepad"},
 	}
-	if got := pickWindow(cands, p); got != 3 {
-		t.Fatalf("got %d, want 3", got)
+	if got := pickWindow(cands, p); got != 6 {
+		t.Fatalf("got %d, want 6", got)
 	}
-	if got := pickWindow(cands[:2], p); got != 2 {
-		t.Fatalf("fallback: got %d, want 2", got)
-	}
-	if got := pickWindow(cands[:1], p); got != 0 {
-		t.Fatalf("no match: got %d, want 0", got)
+	// Same base name in another app, or a different file in Notepad: rejected.
+	if got := pickWindow(cands[:5], p); got != 0 {
+		t.Fatalf("non-Notepad or wrong file accepted: got %d, want 0", got)
 	}
 }
 

@@ -82,6 +82,8 @@ type Platform struct {
 	powerReq windows.Handle
 	powerOn  bool
 	reason   *uint16 // kept alive for the lifetime of powerReq
+	// powerReq is created once and intentionally never closed: it lives for
+	// the whole process and the OS releases it on exit.
 }
 
 var _ engine.Platform = (*Platform)(nil)
@@ -204,7 +206,12 @@ func (p *Platform) OpenEditor(path string) (engine.Editor, error) {
 	if h := findWindow(path); h != 0 {
 		return &editor{p: p, path: path, hwnd: h}, nil
 	}
-	cmd := exec.Command("notepad.exe", path)
+	sysDir, err := windows.GetSystemDirectory()
+	if err != nil {
+		return nil, fmt.Errorf("system directory: %w", err)
+	}
+	// Absolute path: never pick up a notepad.exe from PATH or the cwd.
+	cmd := exec.Command(filepath.Join(sysDir, "notepad.exe"), path)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start notepad: %w", err)
 	}
@@ -234,9 +241,7 @@ var (
 		if title == "" {
 			return 1
 		}
-		var cls [256]uint16
-		n, _ := windows.GetClassName(hwnd, &cls[0], int32(len(cls)))
-		enumCands = append(enumCands, candidate{hwnd: uintptr(hwnd), title: title, class: windows.UTF16ToString(cls[:n])})
+		enumCands = append(enumCands, candidate{hwnd: uintptr(hwnd), title: title, class: windowClass(hwnd)})
 		return 1
 	})
 )
@@ -245,6 +250,19 @@ func windowText(hwnd windows.HWND) string {
 	var buf [512]uint16
 	n, _, _ := procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
 	return windows.UTF16ToString(buf[:n])
+}
+
+func windowClass(hwnd windows.HWND) string {
+	var cls [256]uint16
+	n, _ := windows.GetClassName(hwnd, &cls[0], int32(len(cls)))
+	return windows.UTF16ToString(cls[:n])
+}
+
+// isEditorWindow reports whether hwnd is (still) a Notepad window whose
+// active document is path.
+func isEditorWindow(hwnd windows.HWND, path string) bool {
+	return hwnd != 0 && windows.IsWindow(hwnd) &&
+		pickWindow([]candidate{{hwnd: uintptr(hwnd), title: windowText(hwnd), class: windowClass(hwnd)}}, path) != 0
 }
 
 func findWindow(path string) windows.HWND {
@@ -263,7 +281,7 @@ type editor struct {
 
 // Focus re-locates the window if needed and brings it to the foreground.
 func (e *editor) Focus() error {
-	if e.hwnd == 0 || !windows.IsWindow(e.hwnd) || !titleMatches(windowText(e.hwnd), e.path) {
+	if !isEditorWindow(e.hwnd, e.path) {
 		e.hwnd = findWindow(e.path)
 		if e.hwnd == 0 {
 			return fmt.Errorf("editor window for %s is gone", filepath.Base(e.path))
@@ -279,15 +297,28 @@ func (e *editor) Focus() error {
 		return nil
 	}
 	// Last resort: a background process may only take the foreground right
-	// after input; a synthetic ALT tap satisfies that rule.
-	_ = e.p.sendKeys([]keybdINPUT{
+	// after input; a synthetic ALT tap satisfies that rule. SendInput only
+	// queues events, so give them time to be processed before retrying.
+	if e.altTap() == nil {
+		time.Sleep(50 * time.Millisecond)
+		if e.tryForeground() {
+			return nil
+		}
+		// The tap may have left the still-foreground app in menu mode. A
+		// second ALT tap toggles menu mode off again; we prefer it over Esc,
+		// which could dismiss a dialog in that app.
+		if windows.GetForegroundWindow() != e.hwnd {
+			_ = e.altTap()
+		}
+	}
+	return errors.New("could not bring editor window to the foreground")
+}
+
+func (e *editor) altTap() error {
+	return e.p.sendKeys([]keybdINPUT{
 		{Type: inputKeyboard, Ki: keybdInput{Vk: vkMenu}},
 		{Type: inputKeyboard, Ki: keybdInput{Vk: vkMenu, Flags: keyeventfKeyUp}},
 	})
-	if e.tryForeground() {
-		return nil
-	}
-	return errors.New("could not bring editor window to the foreground")
 }
 
 func (e *editor) tryForeground() bool {
@@ -319,7 +350,7 @@ func (e *editor) attachForeground() bool {
 }
 
 func waitForeground(h windows.HWND) bool {
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if windows.GetForegroundWindow() == h {
 			return true
 		}
@@ -329,8 +360,9 @@ func waitForeground(h windows.HWND) bool {
 }
 
 // Type sends text rune by rune with KEYEVENTF_UNICODE. Before each rune it
-// checks ctx and that the editor is still the foreground window, so keys
-// never land in another app.
+// checks ctx, that the editor is still the foreground window, and that its
+// title still names our file (a Windows 11 Notepad tab switch keeps the same
+// HWND), so keys never land in another app or document.
 func (e *editor) Type(ctx context.Context, text string, delay func() time.Duration) error {
 	for _, r := range text {
 		if err := ctx.Err(); err != nil {
@@ -338,6 +370,9 @@ func (e *editor) Type(ctx context.Context, text string, delay func() time.Durati
 		}
 		if fg := windows.GetForegroundWindow(); fg != e.hwnd {
 			return fmt.Errorf("editor lost focus (foreground is %#x)", uintptr(fg))
+		}
+		if title := windowText(e.hwnd); !titleMatches(title, e.path) {
+			return fmt.Errorf("editor no longer shows %s (title %q)", filepath.Base(e.path), title)
 		}
 		if err := e.p.sendKeys(unicodeKeys(utf16.Encode([]rune{r}))); err != nil {
 			return err
