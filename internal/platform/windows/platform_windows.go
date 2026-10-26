@@ -102,8 +102,12 @@ var (
 	_ engine.Quitter  = (*editor)(nil)
 )
 
-// New returns the Windows platform.
-func New() engine.Platform { return &Platform{} }
+// New returns the Windows platform. It also makes the process DPI-aware
+// (see EnsureDPIAware) as a safety net for callers that did not do so.
+func New() engine.Platform {
+	EnsureDPIAware()
+	return &Platform{}
+}
 
 func tickNow() uint32 { return uint32(windows.DurationSinceBoot() / time.Millisecond) }
 

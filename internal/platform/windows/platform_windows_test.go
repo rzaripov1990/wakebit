@@ -35,3 +35,11 @@ func TestIdleForIsReadable(t *testing.T) {
 		t.Fatalf("negative idle %v", d)
 	}
 }
+
+func TestDPIAwarenessContextConstant(t *testing.T) {
+	var _ func() = EnsureDPIAware // compile check only: calling it changes process state
+	minus4 := -4
+	if dpiAwarenessContextPerMonitorAwareV2 != uintptr(minus4) {
+		t.Fatalf("PER_MONITOR_AWARE_V2 = %#x, want (uintptr)-4", dpiAwarenessContextPerMonitorAwareV2)
+	}
+}

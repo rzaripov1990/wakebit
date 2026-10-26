@@ -15,6 +15,7 @@ import (
 )
 
 func main() {
+	earlyInit() // Windows: DPI awareness, before any window exists
 	fs := flag.NewFlagSet("wakebit", flag.ContinueOnError)
 	var usage strings.Builder
 	fs.SetOutput(&usage)
