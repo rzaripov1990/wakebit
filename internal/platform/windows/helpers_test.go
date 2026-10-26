@@ -15,6 +15,10 @@ func TestTitleMatches(t *testing.T) {
 		want  bool
 	}{
 		{"wakebit-time.txt - Notepad", true},
+		{"wakebit-time.txt — Блокнот", true},
+		{"*wakebit-time.txt – Notepad", true},
+		{"wakebit-time — Блокнот", true},
+		{"wakebit-time.bak — Блокнот", false},
 		{"*wakebit-time.txt - Notepad", true},
 		{"WAKEBIT-TIME.TXT - Блокнот", true},
 		// Explorer "hide extensions for known file types": stem only.

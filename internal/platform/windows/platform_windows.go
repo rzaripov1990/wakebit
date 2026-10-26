@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf16"
@@ -245,7 +246,29 @@ func (p *Platform) OpenEditor(path string) (engine.Editor, error) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return nil, fmt.Errorf("notepad window for %s did not appear within %s", filepath.Base(path), editorWaitTimeout)
+	return nil, fmt.Errorf("notepad window for %s did not appear within %s (notepad-like windows seen: %s)",
+		filepath.Base(path), editorWaitTimeout, describeNotepadLike())
+}
+
+// describeNotepadLike lists the visible windows that look like Notepad, as
+// "class=... title=..." pairs, to explain why title matching found nothing.
+func describeNotepadLike() string {
+	enumMu.Lock()
+	defer enumMu.Unlock()
+	enumCands = enumCands[:0]
+	_ = windows.EnumWindows(enumCB, nil)
+	var out []string
+	for _, c := range enumCands {
+		l := strings.ToLower(c.title)
+		if strings.EqualFold(c.class, notepadClass) || strings.Contains(l, "wakebit") ||
+			strings.Contains(l, "notepad") || strings.Contains(l, "блокнот") {
+			out = append(out, fmt.Sprintf("[class=%q title=%q]", c.class, c.title))
+		}
+	}
+	if len(out) == 0 {
+		return "none"
+	}
+	return strings.Join(out, " ")
 }
 
 // Window enumeration uses one package-level callback (Go limits the number

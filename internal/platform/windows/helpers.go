@@ -27,7 +27,7 @@ const notepadClass = "Notepad"
 // path: an optional leading "*" (unsaved changes), then exactly the file's
 // base name, or the base name without its extension (Explorer's "hide
 // extensions for known file types" makes Notepad show the stem only), then
-// " - ". Comparison is case-insensitive, as Windows file names are. Whatever
+// " - ", " – " or " — ". Comparison is case-insensitive, as Windows file names are. Whatever
 // follows (the localized app name) is ignored. Examples that match:
 // "wakebit-time.txt - Notepad", "*wakebit-time.txt - Блокнот",
 // "wakebit-time - Notepad". "wakebit-time.bak - Notepad" does not.
@@ -37,9 +37,16 @@ func titleMatches(title, path string) bool {
 		return false
 	}
 	t := strings.TrimPrefix(title, "*")
+	// Notepad separates the file name from the app name with a hyphen, an
+	// en dash or an em dash depending on the version and locale.
 	hasPrefix := func(name string) bool {
-		prefix := name + " - "
-		return len(t) >= len(prefix) && strings.EqualFold(t[:len(prefix)], prefix)
+		for _, sep := range []string{" - ", " – ", " — "} {
+			prefix := name + sep
+			if len(t) >= len(prefix) && strings.EqualFold(t[:len(prefix)], prefix) {
+				return true
+			}
+		}
+		return false
 	}
 	if hasPrefix(base) {
 		return true
