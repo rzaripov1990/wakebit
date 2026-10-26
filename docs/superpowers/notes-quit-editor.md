@@ -11,9 +11,32 @@ them (or raise save prompts for them). Quit therefore:
   active tab (verified to be ours right before); done when the HWND is gone or
   its title no longer names our file.
 
-Both keystrokes are sent only while the HWND is foreground, class `Notepad`,
-title matches the file, and no Shift/Ctrl/Alt/Win key is physically held
-(Ctrl+Shift+S would open "Save as"). Quit never relocates the window, never
-kills a process, and is capped at 3 s because Stop waits for it on the tray
-thread while holding the engine mutex. The `Edit`-child detection and Ctrl+W
-behaviour are unverified on a real desktop.
+Safety rules (see `editor.Quit` and the pure helpers in `helpers.go`):
+
+- Quit acts only on the HWND the editor already holds; it never searches for
+  another window. It does not call `Focus`: a Quit-only helper restores a
+  minimized window with `ShowWindowAsync`, calls `SetForegroundWindow` (no
+  `AttachThreadInput`, no ALT tap, no synchronous `ShowWindow` /
+  `BringWindowToTop`) and gives up if the window is not foreground within
+  500 ms.
+- Before Ctrl+S and again before the close step it waits for a 300 ms quiet
+  period (`IdleFor`, which ignores our own injections) and then re-checks:
+  class `Notepad`, title names our file, HWND is foreground, no
+  Shift/Ctrl/Alt/Win down (`GetAsyncKeyState` also sees injected keys; the
+  quiet period is what covers the user typing).
+- After Ctrl+S it polls until the title loses its leading `*`; if it never
+  does (read-only/locked file, Save As or error dialog) nothing is closed.
+  Windows 11 Notepad may not show `*` in the window title at all; then the
+  close step follows immediately and relies on Notepad processing Ctrl+S
+  before Ctrl+W (same input queue). Unverified.
+- Success means the HWND is gone, or its title no longer names our file and
+  a fresh enumeration finds no Notepad window showing our file. A tab switch
+  alone is not reported as success.
+- One 3 s deadline bounds every wait (Stop waits for Quit on the tray thread
+  while holding the engine mutex). Quit never kills a process.
+
+Engine side: Focus/Type errors no longer drop a Quitter editor (so Quit
+still runs on Stop); only errors wrapping `engine.ErrEditorGone` drop it.
+
+The `Edit`-child detection, the `*` title behaviour and Ctrl+W are
+unverified on a real desktop.
