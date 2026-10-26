@@ -42,3 +42,57 @@ func TestCopyFileSameFileIsNoop(t *testing.T) {
 		t.Fatalf("content lost: %q", b)
 	}
 }
+
+func TestRemoveDirRefusals(t *testing.T) {
+	tmp := t.TempDir()
+	other := filepath.Join(tmp, "Other")
+	os.MkdirAll(other, 0o755)
+	f := filepath.Join(other, "f")
+	os.WriteFile(f, []byte("x"), 0o644)
+	for _, d := range []string{filepath.Join("AppData", "Local", "Wakebit"), other, string(filepath.Separator), ""} {
+		if err := RemoveDir(d, ""); err == nil {
+			t.Errorf("expected refusal for %q", d)
+		}
+	}
+	if _, err := os.Stat(f); err != nil {
+		t.Fatal("file in wrong-name dir was touched")
+	}
+}
+
+func TestRemoveDirKeepsExeAndOutsideFiles(t *testing.T) {
+	tmp := t.TempDir()
+	dir := filepath.Join(tmp, "Wakebit")
+	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
+	keep := filepath.Join(dir, "wakebit.exe")
+	os.WriteFile(keep, []byte("x"), 0o755)
+	os.WriteFile(filepath.Join(dir, "cfg.json"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(dir, "sub", "a"), []byte("x"), 0o644)
+	sibling := filepath.Join(tmp, "sibling.txt")
+	os.WriteFile(sibling, []byte("x"), 0o644)
+	if err := RemoveDir(dir, keep); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("keep file removed")
+	}
+	if _, err := os.Stat(sibling); err != nil {
+		t.Error("sibling removed")
+	}
+	for _, p := range []string{"cfg.json", "sub"} {
+		if _, err := os.Stat(filepath.Join(dir, p)); err == nil {
+			t.Errorf("%s not removed", p)
+		}
+	}
+}
+
+func TestInstallDirAbsolute(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", filepath.Join("rel", "x"))
+	if d, err := InstallDir(); err == nil && !filepath.IsAbs(d) {
+		t.Fatalf("relative result %q", d)
+	}
+	base := t.TempDir()
+	t.Setenv("LOCALAPPDATA", base)
+	if d, err := InstallDir(); err != nil || d != filepath.Join(base, "Wakebit") {
+		t.Fatalf("got %q %v", d, err)
+	}
+}

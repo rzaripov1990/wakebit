@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strings"
 
 	"wakebit/internal/config"
 	"wakebit/internal/engine"
@@ -14,9 +15,19 @@ import (
 )
 
 func main() {
-	doInstall := flag.Bool("install", false, "install to the user profile, enable autostart and start")
-	doUninstall := flag.Bool("uninstall", false, "disable autostart and remove the installed copy")
-	flag.Parse()
+	fs := flag.NewFlagSet("wakebit", flag.ContinueOnError)
+	var usage strings.Builder
+	fs.SetOutput(&usage)
+	doInstall := fs.Bool("install", false, "install to the user profile, enable autostart and start")
+	doUninstall := fs.Bool("uninstall", false, "disable autostart and remove the installed copy")
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		reportError(strings.TrimSpace(usage.String()))
+		os.Exit(2)
+	}
+	if *doInstall && *doUninstall {
+		reportError("--install and --uninstall cannot be used together")
+		os.Exit(2)
+	}
 	if *doInstall || *doUninstall {
 		run := runInstall
 		if *doUninstall {

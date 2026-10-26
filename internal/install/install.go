@@ -7,19 +7,24 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ErrUnsupported is returned on platforms without install support.
 var ErrUnsupported = errors.New("install: not supported on this OS")
 
-// InstallDir returns %LOCALAPPDATA%\Wakebit.
-func InstallDir() string {
+// InstallDir returns %LOCALAPPDATA%\Wakebit. It only ever returns an
+// absolute path; otherwise it returns an error.
+func InstallDir() (string, error) {
 	base := os.Getenv("LOCALAPPDATA")
-	if base == "" {
-		home, _ := os.UserHomeDir()
+	if !filepath.IsAbs(base) {
+		home, err := os.UserHomeDir()
+		if err != nil || !filepath.IsAbs(home) {
+			return "", errors.New("install: cannot determine an absolute local app data directory")
+		}
 		base = filepath.Join(home, "AppData", "Local")
 	}
-	return filepath.Join(base, "Wakebit")
+	return filepath.Join(base, "Wakebit"), nil
 }
 
 // CopySelf copies the running executable into dstDir (same file name),
@@ -67,11 +72,22 @@ func copyFile(src, dst string) error {
 }
 
 // RemoveDir removes everything in dir except the file keep (best effort),
-// then tries to remove dir itself.
-func RemoveDir(dir, keep string) {
+// then tries to remove dir itself. It refuses (deleting nothing) unless dir
+// is an absolute, non-root path whose base name is "Wakebit".
+func RemoveDir(dir, keep string) error {
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("install: refusing to remove non-absolute path %q", dir)
+	}
+	dir = filepath.Clean(dir)
+	if filepath.Dir(dir) == dir {
+		return fmt.Errorf("install: refusing to remove root %q", dir)
+	}
+	if !strings.EqualFold(filepath.Base(dir), "Wakebit") {
+		return fmt.Errorf("install: refusing to remove %q: not a Wakebit directory", dir)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return nil
 	}
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
@@ -81,6 +97,7 @@ func RemoveDir(dir, keep string) {
 		_ = os.RemoveAll(p)
 	}
 	_ = os.Remove(dir)
+	return nil
 }
 
 func samePath(a, b string) bool {

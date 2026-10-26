@@ -10,7 +10,11 @@ import (
 // runInstall copies the exe into the install dir, enables autostart and
 // launches the installed copy.
 func runInstall() error {
-	exe, err := install.CopySelf(install.InstallDir())
+	dir, err := install.InstallDir()
+	if err != nil {
+		return err
+	}
+	exe, err := install.CopySelf(dir)
 	if err != nil {
 		return err
 	}
@@ -26,7 +30,13 @@ func runInstall() error {
 // runUninstall disables autostart and removes the install dir (best effort).
 func runUninstall() error {
 	err := install.SetAutostart("", false)
+	dir, derr := install.InstallDir()
+	if derr != nil {
+		return derr
+	}
 	self, _ := os.Executable()
-	install.RemoveDir(install.InstallDir(), self)
+	if rerr := install.RemoveDir(dir, self); rerr != nil && err == nil {
+		err = rerr
+	}
 	return err
 }
