@@ -13,6 +13,9 @@ const (
 	runValue = "Wakebit"
 )
 
+// InstallDir returns %LOCALAPPDATA%\Wakebit (always absolute, or an error).
+func InstallDir() (string, error) { return localAppDataInstallDir() }
+
 // SetAutostart adds or removes the HKCU Run entry pointing at exePath.
 func SetAutostart(exePath string, on bool) error {
 	k, _, err := registry.CreateKey(registry.CURRENT_USER, runKey, registry.SET_VALUE)

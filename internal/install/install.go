@@ -13,9 +13,10 @@ import (
 // ErrUnsupported is returned on platforms without install support.
 var ErrUnsupported = errors.New("install: not supported on this OS")
 
-// InstallDir returns %LOCALAPPDATA%\Wakebit. It only ever returns an
-// absolute path; otherwise it returns an error.
-func InstallDir() (string, error) {
+// localAppDataInstallDir returns %LOCALAPPDATA%\Wakebit (the InstallDir on
+// Windows and other non-macOS systems). It only ever returns an absolute
+// path; otherwise it returns an error.
+func localAppDataInstallDir() (string, error) {
 	base := os.Getenv("LOCALAPPDATA")
 	if !filepath.IsAbs(base) {
 		home, err := os.UserHomeDir()

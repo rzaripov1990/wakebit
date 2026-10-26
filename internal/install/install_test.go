@@ -87,12 +87,12 @@ func TestRemoveDirKeepsExeAndOutsideFiles(t *testing.T) {
 
 func TestInstallDirAbsolute(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", filepath.Join("rel", "x"))
-	if d, err := InstallDir(); err == nil && !filepath.IsAbs(d) {
+	if d, err := localAppDataInstallDir(); err == nil && !filepath.IsAbs(d) {
 		t.Fatalf("relative result %q", d)
 	}
 	base := t.TempDir()
 	t.Setenv("LOCALAPPDATA", base)
-	if d, err := InstallDir(); err != nil || d != filepath.Join(base, "Wakebit") {
+	if d, err := localAppDataInstallDir(); err != nil || d != filepath.Join(base, "Wakebit") {
 		t.Fatalf("got %q %v", d, err)
 	}
 }

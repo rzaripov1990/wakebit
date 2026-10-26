@@ -2,10 +2,10 @@
 
 package platform
 
-import "wakebit/internal/engine"
+import (
+	"wakebit/internal/engine"
+	darwinplat "wakebit/internal/platform/darwin"
+)
 
-// New returns the macOS platform.
-//
-// TODO(Task 6): return darwinplat.New() from wakebit/internal/platform/darwin
-// once that package exists; until then macOS gets the unsupported stub.
-func New() engine.Platform { return unsupported{goos: "darwin"} }
+// New returns the macOS platform (UNVERIFIED: see internal/platform/darwin).
+func New() engine.Platform { return darwinplat.New() }
